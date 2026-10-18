@@ -1,0 +1,86 @@
+{
+  "status": "passed",
+  "device": "cuda",
+  "temperature": 1.7183579206466675,
+  "tasks": {
+    "wesad": {
+      "calls": {
+        "encoder": 1,
+        "head": 1
+      },
+      "export_reload_max_probability_delta": 5.960464477539063e-08,
+      "canonical_vs_original_max_probability_delta": 7.349252700805664e-05,
+      "fp16_evidence_max_probability_delta": 4.693865776062012e-05,
+      "fp16_evidence_same_choice": true,
+      "choice": "The person is in a neutral baseline state.",
+      "probability": 0.5570662021636963,
+      "permutation_passed": true
+    },
+    "uci_har": {
+      "calls": {
+        "encoder": 1,
+        "head": 1
+      },
+      "export_reload_max_probability_delta": 1.1920928955078125e-07,
+      "canonical_vs_original_max_probability_delta": 1.2874603271484375e-05,
+      "fp16_evidence_max_probability_delta": 4.971027374267578e-05,
+      "fp16_evidence_same_choice": true,
+      "choice": "The person is lying down.",
+      "probability": 0.6212467551231384,
+      "permutation_passed": true
+    },
+    "drive_fatigue": {
+      "calls": {
+        "encoder": 1,
+        "head": 1
+      },
+      "export_reload_max_probability_delta": 1.4901161193847656e-07,
+      "canonical_vs_original_max_probability_delta": 9.804964065551758e-06,
+      "fp16_evidence_max_probability_delta": 1.6093254089355469e-06,
+      "fp16_evidence_same_choice": true,
+      "choice": "The driver is alert.",
+      "probability": 0.5904268622398376,
+      "permutation_passed": true
+    },
+    "epilepsy": {
+      "calls": {
+        "encoder": 1,
+        "head": 1
+      },
+      "export_reload_max_probability_delta": 5.960464477539063e-08,
+      "canonical_vs_original_max_probability_delta": 0.0,
+      "fp16_evidence_max_probability_delta": 0.00014714524149894714,
+      "fp16_evidence_same_choice": true,
+      "choice": "A patient between seizures, recorded from the healthy brain area.",
+      "probability": 0.576193630695343,
+      "permutation_passed": true
+    },
+    "ecg_abnormal": {
+      "calls": {
+        "encoder": 1,
+        "head": 1
+      },
+      "export_reload_max_probability_delta": 0.0,
+      "canonical_vs_original_max_probability_delta": 0.0,
+      "fp16_evidence_max_probability_delta": 8.344650268554688e-07,
+      "fp16_evidence_same_choice": true,
+      "choice": "The heartbeat is abnormal.",
+      "probability": 0.9948475360870361,
+      "permutation_passed": true
+    },
+    "mitbih": {
+      "calls": {
+        "encoder": 1,
+        "head": 1
+      },
+      "export_reload_max_probability_delta": 2.2351741790771484e-08,
+      "canonical_vs_original_max_probability_delta": 0.0,
+      "fp16_evidence_max_probability_delta": 0.00483548641204834,
+      "fp16_evidence_same_choice": true,
+      "choice": "A normal sinus or bundle branch block beat.",
+      "probability": 0.9086151123046875,
+      "permutation_passed": true
+    }
+  },
+  "scope": "one real selection window per task; cached-feature differences are diagnostic, final metrics use the FP32 batch-one public path"
+}

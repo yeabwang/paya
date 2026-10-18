@@ -1,0 +1,30 @@
+{
+  "model_id": "mosaic-laboratory/normwear",
+  "revision": "c35a3d1ecda1cb971f1f89caaa3ee4b4c6ad8e84",
+  "format": "encoder_only",
+  "files": [
+    {
+      "file": "config.json",
+      "size": 213,
+      "sha256": "ef1c0a00805a3248e0b28472874ad7fa619f1612299dea94f477e30251d145ae"
+    },
+    {
+      "file": "model.safetensors",
+      "size": 512499600,
+      "sha256": "c9e11f3ff04012af262e0310593ea9772154d17b81a2f759d0528f8580f83d8a"
+    }
+  ],
+  "upstream_files": [
+    {
+      "file": "config.json",
+      "size": 710,
+      "sha256": "5bb48de3a9c3949aea614af21361524a6a9eaacf8b68f50d77cbe4933d4459b4"
+    },
+    {
+      "file": "model.safetensors",
+      "size": 775279696,
+      "sha256": "c2c95ce7e396375ae0f49957b2045398bb975c16a9b50f6a3b3c33c345d663d4"
+    }
+  ],
+  "encoder_parameters": 128118528
+}

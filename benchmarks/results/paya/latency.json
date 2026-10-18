@@ -1,0 +1,215 @@
+{
+  "wesad-request": {
+    "device": "NVIDIA GeForce RTX 4080 SUPER",
+    "precision": "FP32",
+    "batch_size": 1,
+    "model_load_seconds": 2.3917533066123724,
+    "first_request_ms": 688.7339008972049,
+    "signal_shape": [
+      9,
+      389
+    ],
+    "choices": 3,
+    "temperature": 1.7183579206466675,
+    "artifact": "artifacts/paya",
+    "timings": {
+      "cached_text": {
+        "p50_ms": 57.33763566240668,
+        "p95_ms": 58.621998177841306,
+        "iterations": 30
+      },
+      "new_text": {
+        "p50_ms": 66.3295816630125,
+        "p95_ms": 68.82248753681779,
+        "iterations": 30
+      }
+    },
+    "last_prediction": {
+      "choice": "The person is in a neutral baseline state.",
+      "probability": 0.5570662617683411,
+      "probabilities": [
+        0.5570662617683411,
+        0.26169633865356445,
+        0.18123744428157806
+      ]
+    }
+  },
+  "uci_har-request": {
+    "device": "NVIDIA GeForce RTX 4080 SUPER",
+    "precision": "FP32",
+    "batch_size": 1,
+    "model_load_seconds": 2.3880572598427534,
+    "first_request_ms": 695.7119312137365,
+    "signal_shape": [
+      6,
+      165
+    ],
+    "choices": 6,
+    "temperature": 1.7183579206466675,
+    "artifact": "artifacts/paya",
+    "timings": {
+      "cached_text": {
+        "p50_ms": 28.332988265901804,
+        "p95_ms": 30.361787742003795,
+        "iterations": 30
+      },
+      "new_text": {
+        "p50_ms": 39.75919308140874,
+        "p95_ms": 44.084366923198104,
+        "iterations": 30
+      }
+    },
+    "last_prediction": {
+      "choice": "The person is lying down.",
+      "probability": 0.621246874332428,
+      "probabilities": [
+        9.064799087354913e-06,
+        2.697570926102344e-05,
+        9.955938730854541e-05,
+        0.15086917579174042,
+        0.2277483344078064,
+        0.621246874332428
+      ]
+    }
+  },
+  "drive_fatigue-request": {
+    "device": "NVIDIA GeForce RTX 4080 SUPER",
+    "precision": "FP32",
+    "batch_size": 1,
+    "model_load_seconds": 2.5451502203941345,
+    "first_request_ms": 663.8365918770432,
+    "signal_shape": [
+      4,
+      388
+    ],
+    "choices": 2,
+    "temperature": 1.7183579206466675,
+    "artifact": "artifacts/paya",
+    "timings": {
+      "cached_text": {
+        "p50_ms": 34.445786848664284,
+        "p95_ms": 36.311770090833306,
+        "iterations": 30
+      },
+      "new_text": {
+        "p50_ms": 47.08266071975231,
+        "p95_ms": 48.98796179331839,
+        "iterations": 30
+      }
+    },
+    "last_prediction": {
+      "choice": "The driver is alert.",
+      "probability": 0.5904268622398376,
+      "probabilities": [
+        0.5904268622398376,
+        0.40957316756248474
+      ]
+    }
+  },
+  "epilepsy-request": {
+    "device": "NVIDIA GeForce RTX 4080 SUPER",
+    "precision": "FP32",
+    "batch_size": 1,
+    "model_load_seconds": 2.2991313571110368,
+    "first_request_ms": 586.3802656531334,
+    "signal_shape": [
+      1,
+      178
+    ],
+    "choices": 5,
+    "temperature": 1.7183579206466675,
+    "artifact": "artifacts/paya",
+    "timings": {
+      "cached_text": {
+        "p50_ms": 19.111919682472944,
+        "p95_ms": 21.06722583994269,
+        "iterations": 30
+      },
+      "new_text": {
+        "p50_ms": 31.99621243402362,
+        "p95_ms": 34.58702531643212,
+        "iterations": 30
+      }
+    },
+    "last_prediction": {
+      "choice": "A patient between seizures, recorded from the healthy brain area.",
+      "probability": 0.5761938691139221,
+      "probabilities": [
+        0.0036846960429102182,
+        0.045908864587545395,
+        0.5761938691139221,
+        0.35239362716674805,
+        0.0218189787119627
+      ]
+    }
+  },
+  "ecg_abnormal-request": {
+    "device": "NVIDIA GeForce RTX 4080 SUPER",
+    "precision": "FP32",
+    "batch_size": 1,
+    "model_load_seconds": 2.279577692039311,
+    "first_request_ms": 634.5422463491559,
+    "signal_shape": [
+      1,
+      186
+    ],
+    "choices": 2,
+    "temperature": 1.7183579206466675,
+    "artifact": "artifacts/paya",
+    "timings": {
+      "cached_text": {
+        "p50_ms": 19.62220761924982,
+        "p95_ms": 21.701683988794684,
+        "iterations": 30
+      },
+      "new_text": {
+        "p50_ms": 29.468963854014874,
+        "p95_ms": 32.646257570013404,
+        "iterations": 30
+      }
+    },
+    "last_prediction": {
+      "choice": "The heartbeat is abnormal.",
+      "probability": 0.9948475360870361,
+      "probabilities": [
+        0.005152510479092598,
+        0.9948475360870361
+      ]
+    }
+  },
+  "mitbih-request": {
+    "device": "NVIDIA GeForce RTX 4080 SUPER",
+    "precision": "FP32",
+    "batch_size": 1,
+    "model_load_seconds": 2.332285181619227,
+    "first_request_ms": 669.582899659872,
+    "signal_shape": [
+      1,
+      195
+    ],
+    "choices": 3,
+    "temperature": 1.7183579206466675,
+    "artifact": "artifacts/paya",
+    "timings": {
+      "cached_text": {
+        "p50_ms": 19.825202878564596,
+        "p95_ms": 21.025638934224844,
+        "iterations": 30
+      },
+      "new_text": {
+        "p50_ms": 29.87486869096756,
+        "p95_ms": 31.701813824474808,
+        "iterations": 30
+      }
+    },
+    "last_prediction": {
+      "choice": "A normal sinus or bundle branch block beat.",
+      "probability": 0.9086151123046875,
+      "probabilities": [
+        0.9086151123046875,
+        0.04750378057360649,
+        0.04388117790222168
+      ]
+    }
+  }
+}

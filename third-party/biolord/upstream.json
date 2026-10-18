@@ -1,0 +1,11 @@
+{
+  "model_id": "FremyCompany/BioLORD-2023",
+  "upstream_files": [
+    {
+      "file": "biolord-README.md",
+      "url": "https://huggingface.co/FremyCompany/BioLORD-2023/resolve/167aab527b238a50ca65224e6319215d2ff4fc9f/README.md",
+      "bytes": 7166,
+      "sha256": "7df07717419520693bcd24c7f03e5438c25054095b2d129746049719cea14e06"
+    }
+  ]
+}

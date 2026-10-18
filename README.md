@@ -1,0 +1,1 @@
+**Paya: a non-autoregressive decision engine for body signals.** Typed decisions over ECG, EEG, accelerometer and gyroscope signals in a single forward pass ~20–70 ms  trained with supervised cross-entropy and calibrated with a global temperature, with one shared checkpoint for every request.

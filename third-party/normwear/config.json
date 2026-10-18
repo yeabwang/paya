@@ -1,0 +1,17 @@
+{
+  "img_size": [
+    387,
+    65
+  ],
+  "patch_size": [
+    9,
+    5
+  ],
+  "in_chans": 3,
+  "nvar": 4,
+  "embed_dim": 768,
+  "depth": 12,
+  "num_heads": 12,
+  "mlp_ratio": 4.0,
+  "fuse_freq": 2
+}

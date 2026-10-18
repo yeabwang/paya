@@ -1,0 +1,38 @@
+{
+  "cached": {
+    "probabilities": [
+      0.9134421944618225,
+      0.045166172087192535,
+      0.041391681879758835
+    ],
+    "feature_max_abs_delta": 0.0,
+    "feature_mean_abs_delta": 0.0
+  },
+  "raw": {
+    "probabilities": [
+      0.908606231212616,
+      0.04750824347138405,
+      0.043885450810194016
+    ],
+    "feature_max_abs_delta": 0.010339140892028809,
+    "feature_mean_abs_delta": 0.000603790336754173
+  },
+  "raw_half": {
+    "probabilities": [
+      0.9085613489151001,
+      0.04753267019987106,
+      0.04390595853328705
+    ],
+    "feature_max_abs_delta": 0.0107421875,
+    "feature_mean_abs_delta": 0.0005994814564473927
+  },
+  "repeat8_half": {
+    "probabilities": [
+      0.9134421944618225,
+      0.045166172087192535,
+      0.041391681879758835
+    ],
+    "feature_max_abs_delta": 0.0,
+    "feature_mean_abs_delta": 0.0
+  }
+}

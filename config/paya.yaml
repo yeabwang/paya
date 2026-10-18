@@ -1,0 +1,24 @@
+seed: 42
+threads: 6
+assets: third-party/normwear
+head:
+  width: 256
+  layers: 2
+  heads: 4
+  dropout: 0.1
+  memory_time_bins: 8
+data:
+  root: data/body-signals-v1
+  text_cache: cache/paya-text.pt
+  feature_cache: cache/paya-evidence.json
+  batch_size: 32
+  exclude: []
+optim:
+  epochs: 20
+  patience: 5
+  lr: 0.0003
+  weight_decay: 0.01
+  label_smoothing: 0.0
+wandb:
+  mode: disabled
+  project: paya
