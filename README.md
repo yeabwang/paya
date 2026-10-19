@@ -1,6 +1,6 @@
 # Paya
 
-Paya makes structured decisions from body signals. Given a signal window, its metadata, a separate question and ordered candidate answers, it returns `choice`, `probabilities` and `confidence` without generating text.
+The first non-autoregressive decision engine for body signals.** Typed decisions over PPG, ECG, EEG, accelerometer and gyroscope signals in a single forward pass ~20–70 ms.
 
 ## Use
 
