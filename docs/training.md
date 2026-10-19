@@ -10,11 +10,15 @@ Each JSONL row contains:
 | --- | --- |
 | `state` | Signal samples and metadata, using the public input format |
 | `question` | One nonempty question |
-| `criteria` | 2–64 distinct nonempty answer strings, in output order |
+| `criteria` | 2â€“64 distinct nonempty answer strings, in output order |
 | `target` | Zero-based correct criterion index |
 | `source_id`, `group_id`, `recording_id` | Audit identifiers for the window, subject/group and recording |
 
 Keep all windows and questions from a recording in one split. Train, selection, calibration and test splits must have disjoint audit identifiers. Training shuffles candidate order while preserving the target mapping.
+
+## Signal preparation
+
+Dataset states require `sensor_type`, `sampling_rate_hz` and `duration_s` on every channel. `signal_condition` defaults to `raw`; `processed` skips NeuroKit. Use recordings appropriate to the question, with adequate duration and signal quality. Sampling rates and amplitude scales are retained. Frozen feature caches include the preparation identity, signal metadata, native samples and elapsed intervals. See [preprocessing](preprocessing.md).
 
 ## Run
 
@@ -26,7 +30,7 @@ python -m paya.evaluate --config config/paya.yaml --checkpoint runs/paya-v1/cali
 python -m paya.export --config config/paya.yaml --checkpoint runs/paya-v1/calibrated.pt --output artifacts/paya-v1
 ```
 
-Native cleaning is shared across routing and encoder formatting. Inference formats only the selected encoder; training can explicitly evaluate both eligible encoders to supervise the gate. Training warms up the shared head across compatible experts, then learns routing from training-only expert NLL targets while training the head under top-1 dispatch. Only routed epochs can become `best.pt`, selected by selection NLL. Frozen encoders remain in evaluation mode. Calibration subsequently fits one global temperature on separate outcomes; it is bound to the router/head weights and invalidated by further training.
+Raw channels are cleaned at their declared rate; processed channels bypass NeuroKit. Native variable-length windows are encoded with frozen MantisV2, and frozen BioLORD independently encodes the question and choices. Only the shared decision head is trained, using candidate cross-entropy. Every epoch is eligible for `best.pt`, selected by independent selection NLL. Calibration then fits one global temperature on separate outcomes; it is bound to the decision-head weights and invalidated by further training.
 
 The run directory holds `history.jsonl`, resumable `last.pt` and `best.pt`. Resume with the same model, datasets and optimizer settings:
 
@@ -47,7 +51,7 @@ wandb:
 
 Optional `entity` selects a team and `name` labels the run. Use `mode: offline` to save locally without authentication, or `mode: disabled` to skip tracking. Omitting the W&B section also disables tracking.
 
-W&B records configuration, model identity, dataset counts/checksums, answer/router losses, gradient norm, learning rate, epoch duration, selection accuracy/NLL/Brier/ECE and routing fractions. Each best checkpoint produces a `model` artifact with alias `best`, containing inference weights and identity; optimizer state and raw recordings are excluded. Full resumable checkpoints stay local.
+W&B records configuration, model identity, dataset counts/checksums, answer loss, gradient norm, learning rate, epoch duration, selection accuracy/NLL/Brier/ECE. Each best checkpoint produces a `model` artifact with alias `best`, containing inference weights and identity; optimizer state and raw recordings are excluded. Full resumable checkpoints stay local.
 
 Online resume reuses the saved W&B run ID, project and entity. Offline resume creates a new local run linked by `resumed_from_run_id`; the checkpoint restores optimizer state, random generators and global step in either mode. W&B finishes the run on success or failure. Offline logs can later be uploaded with `wandb sync <offline-run-directory>`.
 

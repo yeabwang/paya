@@ -16,15 +16,15 @@ def threads():
     torch.set_num_threads(2)
 
 
-def state(kind="ecg", rate=500, duration=6, unit=None):
-    units = {"ecg": "mV", "eeg": "uV", "accelerometer": "m/s2", "gyroscope": "rad/s",
-             "ppg": "au", "eda": "uS", "respiration": "au", "temperature": "C", "emg": "uV"}
+def state(kind="ecg", rate=500, duration=6, condition=None):
     t = np.arange(round(rate*duration))/rate
     waveform = np.sin(2*np.pi*min(1.3, rate/8)*t) + 0.05*np.cos(2*np.pi*min(7, rate/4)*t)
     if kind == "temperature":
         waveform = 37 + 0.01*t
-    return {"signals": [{"samples": waveform.tolist(), "metadata": {
-        "sensor_type": kind, "sampling_rate_hz": rate, "unit": unit or units[kind]}}]}
+    metadata = {"sensor_type": kind, "sampling_rate_hz": rate, "duration_s": len(t)/rate}
+    if condition is not None:
+        metadata["signal_condition"] = condition
+    return {"signals": [{"samples": waveform.tolist(), "metadata": metadata}]}
 
 
 class TextDouble:
@@ -51,13 +51,13 @@ class EncoderDouble(nn.Module):
 
     def forward(self, encoder_input):
         self.calls += 1
-        values = self.base(encoder_input.frames.mean(-1))
-        return EncodedSignal(values, encoder_input.bounds.mean(-1))
+        values = self.base(torch.stack([frame.mean(-1) for frame in encoder_input.frames]))
+        return EncodedSignal(values, encoder_input.intervals_s)
 
 
 def new_model():
     torch.manual_seed(100)
-    return PayaModel(EncoderDouble(768), EncoderDouble(512), TextDouble(),
+    return PayaModel(EncoderDouble(512), TextDouble(),
                      head={"width": 256, "heads": 4, "layers": 2, "dropout": 0}).eval()
 
 

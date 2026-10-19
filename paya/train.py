@@ -1,4 +1,4 @@
-"""Train the shared decision head and two-expert router."""
+"""Train the shared decision head over frozen native-rate Mantis embeddings."""
 
 import argparse
 import json
@@ -14,7 +14,7 @@ from .checkpoint import save_checkpoint, load_checkpoint
 from .data import ChoiceDataset, assert_disjoint, make_batch
 from .evaluate import collect, metrics
 from .features import FeatureCache
-from .model import PayaModel, DecisionBatch
+from .model import PayaModel
 from .tracking import open_run, run_identity, log_best
 
 
@@ -26,36 +26,6 @@ def choice_loss(logits, targets, mask):
     if not mask.gather(1, targets[:, None]).all():
         raise ValueError("Cannot train on a padded candidate")
     return F.cross_entropy(logits, targets)
-
-
-def subset(batch, indices):
-    ids = indices.tolist()
-    return DecisionBatch([batch.states[i] for i in ids], batch.question[indices], batch.criteria[indices],
-                         batch.criteria_mask[indices], [batch.descriptions[i] for i in ids])
-
-
-def expert_losses(model, batch, targets, cache=None, gradients=False):
-    """Compute compatible expert NLLs for head warmup and routing targets."""
-    compatible = torch.stack([s.compatible for s in batch.states]).to(model.device)
-    losses = batch.question.new_full((len(targets), 2), torch.inf)
-    for expert in range(2):
-        indices = compatible[:, expert].nonzero().flatten()
-        if indices.numel():
-            with torch.set_grad_enabled(gradients):
-                current = subset(batch, indices)
-                routes = torch.full((len(indices),), expert, device=model.device, dtype=torch.long)
-                logits = model(current, routes=routes, cache=cache)["logits"]
-                losses[indices, expert] = F.cross_entropy(logits, targets[indices], reduction="none")
-    return losses, compatible
-
-
-def routing_targets(losses, compatible, costs=(1.0, 1.0), cost_weight=0.0, temperature=1.0):
-    if temperature <= 0 or cost_weight < 0 or len(costs) != 2 or any(c < 0 for c in costs):
-        raise ValueError("Invalid route-target settings")
-    if losses.shape != compatible.shape or not compatible.any(-1).all():
-        raise ValueError("Invalid route eligibility")
-    scores = -(losses + cost_weight*losses.new_tensor(costs)) / temperature
-    return scores.masked_fill(~compatible, -torch.inf).softmax(-1).detach()
 
 
 def train(config_path, run_dir, device="cpu", resume=None):
@@ -77,9 +47,9 @@ def train(config_path, run_dir, device="cpu", resume=None):
     model = PayaModel.from_assets(config["assets"], config.get("preparation"), config.get("head"), device)
     cache = FeatureCache(config["feature_cache"]) if config.get("feature_cache") else None
     opt = config["optim"]
-    epochs, warmup = opt["epochs"], opt.get("warmup_epochs", 1)
-    if not isinstance(epochs, int) or epochs < 1 or not 0 <= warmup < epochs:
-        raise ValueError("Need at least one routed training epoch after head warmup")
+    epochs = opt["epochs"]
+    if isinstance(epochs, bool) or not isinstance(epochs, int) or epochs < 1:
+        raise ValueError("Need at least one training epoch")
     optimizer = torch.optim.AdamW(model.trainable_parameters(), lr=opt["lr"], weight_decay=opt.get("weight_decay", 0.01))
     start, best, step, previous_run = 0, float("inf"), 0, None
     if resume:
@@ -107,25 +77,9 @@ def train(config_path, run_dir, device="cpu", resume=None):
                 batch = make_batch(model, rows)
                 targets = torch.tensor([row["target"] for row in rows], device=model.device)
                 optimizer.zero_grad(set_to_none=True)
-                gate_loss = None
-                if epoch < warmup:
-                    model.train()
-                    losses, compatible = expert_losses(model, batch, targets, cache, gradients=True)
-                    decision = torch.stack([losses[compatible[:, expert], expert].mean()
-                                            for expert in range(2) if compatible[:, expert].any()]).mean()
-                    loss = decision
-                else:
-                    model.eval()
-                    with torch.no_grad():
-                        losses, compatible = expert_losses(model, batch, targets, cache)
-                        teacher = routing_targets(losses, compatible, opt.get("expert_costs", [1.0, 1.0]),
-                                                  opt.get("cost_weight", 0.0), opt.get("route_temperature", 1.0))
-                    model.train()
-                    result = model(batch, cache=cache)
-                    decision = choice_loss(result["logits"], targets, batch.criteria_mask)
-                    log_routes = result["router_logits"].log_softmax(-1).masked_fill(~compatible, 0)
-                    gate_loss = -(teacher*log_routes).sum(-1).mean()
-                    loss = decision + opt.get("router_loss_weight", 1.0)*gate_loss
+                model.train()
+                result = model(batch, cache=cache)
+                loss = choice_loss(result["logits"], targets, batch.criteria_mask)
                 if not torch.isfinite(loss):
                     raise FloatingPointError("Nonfinite training loss")
                 loss.backward()
@@ -135,15 +89,12 @@ def train(config_path, run_dir, device="cpu", resume=None):
                 total += loss.item()*len(rows); count += len(rows)
                 if run and step % tracking.get("log_every", 10) == 0:
                     logged = {"step": step, "epoch": epoch+1, "train/loss": loss.item(),
-                              "train/answer_loss": decision.item(), "train/gradient_norm": float(gradient_norm),
+                              "train/answer_loss": loss.item(), "train/gradient_norm": float(gradient_norm),
                               "train/learning_rate": optimizer.param_groups[0]["lr"]}
-                    if gate_loss is not None:
-                        logged["train/router_loss"] = gate_loss.item()
                     run.log(logged)
             records = collect(model, datasets["selection"], config.get("batch_size", 8), cache)
             selection = metrics(records)
-            # Select checkpoints only after the gate starts training.
-            improved = epoch >= warmup and selection["nll"] < best
+            improved = selection["nll"] < best
             if improved:
                 best = selection["nll"]
             state = {"config": config, "epoch": epoch+1, "best_nll": best, "global_step": step,
@@ -157,7 +108,7 @@ def train(config_path, run_dir, device="cpu", resume=None):
             save_checkpoint(destination/"last.pt", model, state)
             if improved:
                 save_checkpoint(destination/"best.pt", model, state)
-            row = {"epoch": epoch+1, "phase": "head_warmup" if epoch < warmup else "routed",
+            row = {"epoch": epoch+1, "phase": "decision_head",
                    "step": step, "train_loss": total/max(1, count), "selection": selection}
             with (destination/"history.jsonl").open("a", encoding="utf-8") as log:
                 log.write(json.dumps(row) + "\n")
@@ -166,8 +117,6 @@ def train(config_path, run_dir, device="cpu", resume=None):
                 logged = {"epoch": epoch+1, "step": step, "phase": row["phase"],
                           "train/epoch_loss": row["train_loss"], "train/epoch_seconds": perf_counter()-started,
                           **{f"selection/{k}": selection[k] for k in ("accuracy", "nll", "brier", "ece_15", "count")}}
-                for expert, name in enumerate(("normwear", "mantis")):
-                    logged[f"selection/route_fraction/{name}"] = sum(r["route"] == expert for r in records)/len(records)
                 run.log(logged)
                 if improved:
                     log_best(run, model, destination, epoch+1, best)

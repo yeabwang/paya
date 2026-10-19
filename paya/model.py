@@ -1,4 +1,4 @@
-"""Clean native signals, route, format the chosen encoder input and score choices."""
+"""Prepare native signals, encode with Mantis and score separate candidate answers."""
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -6,37 +6,34 @@ from pathlib import Path
 import torch
 from torch import nn
 
-from .encoders import EncodedSignal, FixedWidthAdapter, NormWearEncoder, MantisEncoder
+from .encoders import EncodedSignal, MantisEncoder
 from .head import DecisionHead
 from .inputs import validate_text
-from .preprocessing import SignalPreprocessor, PreparationConfig, CleanedState
+from .preprocessing import SignalPreprocessor, PreparationConfig, PreparedState
 from .provenance import RUNTIME_CONTRACT, ARCHITECTURE, verify_assets
-from .router import ExpertRouter
 from .text import TextEncoder
 
 
 @dataclass
 class DecisionBatch:
-    states: list[CleanedState]
+    states: list[PreparedState]
     question: torch.Tensor
     criteria: torch.Tensor
     criteria_mask: torch.Tensor
     descriptions: list[list[str]]
 
     def to(self, device):
-        return DecisionBatch([s.to(device) for s in self.states], self.question.to(device),
+        return DecisionBatch(self.states, self.question.to(device),
                              self.criteria.to(device),
                              self.criteria_mask.to(device), self.descriptions)
 
 
 class PayaModel(nn.Module):
-    """Choose a frozen encoder from native cleaned signals and score candidate answers."""
+    """Fuse frozen Mantis signal embeddings with separate BioLORD text embeddings."""
 
-    def __init__(self, normwear, mantis, text_encoder, preparation=None, head=None, asset_identity=None):
+    def __init__(self, mantis, text_encoder, preparation=None, head=None, asset_identity=None):
         super().__init__()
-        self.encoders = nn.ModuleList((normwear, mantis)).requires_grad_(False)
-        self.adapters = nn.ModuleList((FixedWidthAdapter(768), FixedWidthAdapter(512)))
-        self.router = ExpertRouter()
+        self.encoder = mantis.requires_grad_(False).eval()
         self.head = DecisionHead(**(head or {}))
         self.text_encoder = text_encoder
         self.preprocessor = SignalPreprocessor(preparation)
@@ -50,8 +47,7 @@ class PayaModel(nn.Module):
         sources = verify_assets(assets)
         settings = PreparationConfig(**(preparation or {}))
         text = TextEncoder(device=device, model_path=Path(assets["text"]))
-        model = cls(NormWearEncoder.load(assets["normwear"], settings.time_bins),
-                    MantisEncoder.load(assets["mantis"]), text, settings, head, sources)
+        model = cls(MantisEncoder.load(assets["mantis"], settings.max_samples), text, settings, head, sources)
         return model.to(device)
 
     @property
@@ -65,7 +61,7 @@ class PayaModel(nn.Module):
 
     def train(self, mode=True):
         super().train(mode)
-        self.encoders.eval()
+        self.encoder.eval()
         if mode and hasattr(self, "temperature"):
             self.temperature.fill_(1.0)
             self.calibration = None
@@ -74,17 +70,17 @@ class PayaModel(nn.Module):
         return self
 
     def trainable_parameters(self):
-        return (p for module in (self.router, self.head) for p in module.parameters())
+        return self.head.parameters()
 
     def make_batch(self, states, questions, criteria):
-        """Clean native signals and encode each question and choice separately."""
+        """Prepare native signals and encode each question and choice separately."""
         if not states or len(states) != len(questions) or len(states) != len(criteria):
             raise ValueError("Supply matching nonempty state/question/criteria batches")
         for q, c in zip(questions, criteria):
             validate_text(q, c)
-        cleaned = [s if isinstance(s, CleanedState) else self.preprocessor.clean(s) for s in states]
-        if any(s.audit.get("preparation") != self.preprocessor.identity() for s in cleaned):
-            raise ValueError("Cleaned signal does not match current physiological preprocessing")
+        prepared = [s if isinstance(s, PreparedState) else self.preprocessor.prepare(s) for s in states]
+        if any(s.audit.get("preparation") != self.preprocessor.identity() for s in prepared):
+            raise ValueError("Prepared signal does not match current preprocessing")
         strings = [s for q, c in zip(questions, criteria) for s in [q, *c]]
         vectors = self.text_encoder.encode(strings).to(self.device).detach().clone()
         if vectors.shape != (len(strings), 768) or not torch.isfinite(vectors).all():
@@ -97,58 +93,36 @@ class PayaModel(nn.Module):
             cs[i, :len(choices)] = vectors[offset+1:offset+1+len(choices)]
             mask[i, :len(choices)] = True
             offset += 1 + len(choices)
-        return DecisionBatch(cleaned, torch.stack(qs), cs,
+        return DecisionBatch(prepared, torch.stack(qs), cs,
                              mask, [list(c) for c in criteria]).to(self.device)
 
-    @staticmethod
-    def router_inputs(batch):
-        signals, owners = [], []
-        compatible = torch.stack([s.compatible for s in batch.states]).to(batch.question.device)
-        for index, state in enumerate(batch.states):
-            for channel in state.channels:
-                signals.append(torch.from_numpy(channel.samples).to(batch.question.device))
-                owners.append(index)
-        return signals, torch.tensor(owners, device=batch.question.device, dtype=torch.long), compatible
-
-    def encode(self, cleaned, expert):
-        encoder_input = self.preprocessor.format_for_encoder(cleaned, expert)
+    def encode(self, prepared):
+        encoder_input = self.preprocessor.format(prepared)
         with torch.no_grad():
-            encoded = self.encoders[expert](encoder_input.to(self.device))
-        expected_width = (768, 512)[expert]
-        if encoded.values.ndim != 2 or encoded.values.shape[-1] != expected_width:
-            raise ValueError("Encoder output width differs from its fixed adapter")
-        if (encoded.times.shape != (len(encoded.values),) or not torch.isfinite(encoded.times).all()
-                or ((encoded.times < 0) | (encoded.times > 1)).any()):
-            raise ValueError("Invalid relative times")
+            encoded = self.encoder(encoder_input.to(self.device))
+        if encoded.values.ndim != 2 or encoded.values.shape[-1] != 512 or not torch.isfinite(encoded.values).all():
+            raise ValueError("Encoder must return finite Mantis vectors [M,512]")
+        intervals = encoded.intervals_s
+        if (intervals.shape != (len(encoded.values), 2) or not torch.isfinite(intervals).all()
+                or (intervals[:, 0] < 0).any() or (intervals[:, 1] <= intervals[:, 0]).any()):
+            raise ValueError("Invalid elapsed interval times")
         if not 1 <= len(encoded.values) <= self.preprocessor.config.max_signal_tokens:
             raise ValueError("Invalid encoded token budget")
-        return EncodedSignal(self.adapters[expert](encoded.values.float()).detach(), encoded.times.float().detach())
+        return EncodedSignal(encoded.values.float().detach(), intervals.float().detach())
 
-    def forward(self, batch, routes=None, cache=None):
-        signals, owners, compatible = self.router_inputs(batch)
-        route_logits = self.router(signals, owners, batch.question, compatible)
-        if routes is None:
-            routes = route_logits.argmax(-1)
-        if routes.shape != (len(batch.states),) or routes.dtype != torch.long:
-            raise ValueError("Routes must be integer expert indices [B]")
-        if ((routes < 0) | (routes > 1)).any() or not compatible.gather(1, routes[:, None]).all():
-            raise ValueError("An expert route is incompatible")
-        encoded = []
-        for state, route in zip(batch.states, routes.tolist()):
-            value = cache.get_or_encode(self, state, route) if cache else self.encode(state, route)
-            encoded.append(value)
+    def forward(self, batch, cache=None):
+        encoded = [cache.get_or_encode(self, state) if cache else self.encode(state) for state in batch.states]
         tokens = max(len(e.values) for e in encoded)
-        signal = batch.question.new_zeros(len(encoded), tokens, 768)
-        times = batch.question.new_zeros(len(encoded), tokens)
+        signal = batch.question.new_zeros(len(encoded), tokens, 512)
+        intervals = batch.question.new_zeros(len(encoded), tokens, 2)
         mask = torch.zeros(len(encoded), tokens, dtype=torch.bool, device=self.device)
         for i, value in enumerate(encoded):
             length = len(value.values)
             signal[i, :length] = value.values.to(self.device)
-            times[i, :length] = value.times.to(self.device)
+            intervals[i, :length] = value.intervals_s.to(self.device)
             mask[i, :length] = True
-        logits = self.head(signal, mask, times, batch.question, batch.criteria, batch.criteria_mask)
-        return {"logits": logits, "router_logits": route_logits, "routes": routes,
-                "criteria_mask": batch.criteria_mask}
+        logits = self.head(signal, mask, intervals, batch.question, batch.criteria, batch.criteria_mask)
+        return {"logits": logits, "criteria_mask": batch.criteria_mask}
 
     @torch.no_grad()
     def predict(self, state, question, criteria):

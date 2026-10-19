@@ -8,10 +8,10 @@ from .encoders import EncodedSignal
 from .provenance import CACHE_CONTRACT, fingerprint
 
 
-def tensor_digest(values, times):
+def tensor_digest(values, intervals_s):
     import hashlib
     digest = hashlib.sha256()
-    for tensor in (values, times):
+    for tensor in (values, intervals_s):
         digest.update(tensor.contiguous().numpy().tobytes())
     return digest.hexdigest()
 
@@ -21,32 +21,32 @@ class FeatureCache:
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
 
-    def get_or_encode(self, model, cleaned, expert):
+    def get_or_encode(self, model, prepared):
         binding = {"contract": CACHE_CONTRACT, "model": model.identity(),
-                   "cleaned": cleaned.identity, "expert": expert}
+                   "prepared": prepared.identity}
         path = self.directory / (fingerprint(binding) + ".pt")
         if path.exists():
             payload = torch.load(path, map_location="cpu", weights_only=True)
             if payload.get("binding") != binding:
                 raise ValueError("Frozen feature cache contract mismatch")
-            values, times = payload["values"], payload["times"]
-            if values.ndim != 2 or values.shape[1] != 768 or times.shape != (len(values),):
+            values, intervals = payload["values"], payload["intervals_s"]
+            if values.ndim != 2 or values.shape[1] != 512 or intervals.shape != (len(values), 2):
                 raise ValueError("Frozen feature cache shape mismatch")
             if not 1 <= len(values) <= model.preprocessor.config.max_signal_tokens:
                 raise ValueError("Frozen feature cache exceeds the token budget")
-            if values.dtype != torch.float32 or times.dtype != torch.float32:
+            if values.dtype != torch.float32 or intervals.dtype != torch.float32:
                 raise ValueError("Frozen feature cache must preserve FP32 computation")
-            if not torch.isfinite(values).all() or not torch.isfinite(times).all():
+            if not torch.isfinite(values).all() or not torch.isfinite(intervals).all():
                 raise ValueError("Nonfinite cached features")
-            if ((times < 0) | (times > 1)).any():
-                raise ValueError("Cached relative times must lie within [0,1]")
-            if tensor_digest(values, times) != payload.get("digest"):
+            if (intervals[:, 0] < 0).any() or (intervals[:, 1] <= intervals[:, 0]).any():
+                raise ValueError("Cached interval times are invalid")
+            if tensor_digest(values, intervals) != payload.get("digest"):
                 raise ValueError("Cached feature content changed")
-            return EncodedSignal(values.to(model.device), times.to(model.device))
-        encoded = model.encode(cleaned, expert)
-        values, times = encoded.values.cpu().float(), encoded.times.cpu().float()
+            return EncodedSignal(values.to(model.device), intervals.to(model.device))
+        encoded = model.encode(prepared)
+        values, intervals = encoded.values.cpu().float(), encoded.intervals_s.cpu().float()
         temporary = path.with_suffix(".partial")
-        torch.save({"binding": binding, "values": values, "times": times,
-                    "digest": tensor_digest(values, times)}, temporary)
+        torch.save({"binding": binding, "values": values, "intervals_s": intervals,
+                    "digest": tensor_digest(values, intervals)}, temporary)
         temporary.replace(path)
         return encoded

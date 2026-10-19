@@ -1,51 +1,57 @@
 # Signal preparation
 
-`signal + metadata → native-rate NeuroKit cleaning → router + question → selected encoder formatting → frozen encoder`
+`validate → clean raw channels only → native variable-length formatting → frozen MantisV2`
 
-[physiology.py](../paya/physiology.py) returns one cleaned waveform per physical channel and an audit. [preprocessing.py](../paya/preprocessing.py) validates the streams, checks encoder eligibility, and resamples/frames only after selection. Cleaning and formatting receive no question or choices.
+## Input contract
 
-## Native cleaning
+Each physical channel contains a one-dimensional `samples` array and `metadata`:
 
-Units are converted first: ECG to mV; EEG/EMG to µV; acceleration to m/s²; angular velocity to rad/s; EDA to µS; temperature to °C. PPG and respiration retain their declared measurement conventions. Filters below use NeuroKit zero-phase Butterworth SOS unless stated otherwise; `fs` is native sampling rate in Hz.
+| Metadata | Requirement |
+| --- | --- |
+| `sensor_type` | ECG, EEG, accelerometer, gyroscope, PPG, EDA, respiration, temperature or EMG; case-insensitive |
+| `sampling_rate_hz` | Required finite positive number, never inferred or replaced |
+| `duration_s` | Required finite positive number matching `sample_count / sampling_rate_hz` |
+| `signal_condition` | `raw` by default, or `processed` |
 
-| Signal | Cleaned waveform passed to the router | Native quality observations |
+Samples must be finite and representable in float32. Their supplied amplitude scale is retained; unit conversion and lead handling are absent. Channels must describe the same interval. Mixed native rates require matching explicit `start_time_s` values. Optional timestamps must match the declared uniform rate.
+
+## Raw NeuroKit processing
+
+[physiology.py](../paya/physiology.py) returns one native-rate cleaned waveform plus audit observations. These operations do not change sample count or sampling rate. `fs` below is the supplied rate.
+
+| Signal | Retained waveform | Audit calculations |
 | --- | --- | --- |
-| ECG | DC-preserving low-pass `min(150,0.4*fs)` | 0.5 Hz high-pass detection copy; NeuroKit peaks without artifact correction and template quality when enough beats exist |
-| PPG | DC-preserving low-pass `min(40,0.4*fs)` | Elgendi 0.5–8 Hz detection copy when `fs>16`; peaks and template quality |
-| EDA | NeuroKit 3 Hz cleaning if `fs>6`; otherwise no added low-pass | 0.05 Hz phasic decomposition where coverage permits; SCR onsets and peaks |
-| Respiration | DC-preserving low-pass `min(3,0.4*fs)` | Khodadad2018 detection copy when `fs>6`; respiratory peaks and troughs |
-| EMG | Bandpass 20–`min(450,0.4*fs)`; requires `fs>50` | Rectified 8 Hz envelope and activation at native rate |
-| EEG | DC-preserving low-pass `min(100,0.4*fs)` | Bad-channel flags for ≥4 aligned channels with matching rate/reference |
-| Accelerometer/gyroscope | DC-preserving low-pass `min(40,0.4*fs)` | Range and flatline flags; signed axes/gravity preserved |
-| Temperature | Three-observation median with edge context | Range and flatline flags; absolute level/trend preserved |
+| ECG | DC-preserving low-pass `min(150,0.4*fs)` | High-pass detection copy; peaks and template quality |
+| PPG | DC-preserving low-pass `min(40,0.4*fs)` | Elgendi detection copy where rate permits; peaks and template quality |
+| EDA | NeuroKit 3 Hz cleaning if `fs>6`; otherwise no added low-pass | Phasic responses where coverage permits |
+| Respiration | DC-preserving low-pass `min(3,0.4*fs)` | Khodadad2018 detection copy; peaks and troughs |
+| EMG | Bandpass 20–`min(450,0.4*fs)`; requires `fs>50` | Rectified 8 Hz envelope and activation |
+| EEG | DC-preserving low-pass `min(100,0.4*fs)` | Bad-channel flags for aligned raw EEG groups |
+| Accelerometer/gyroscope | DC-preserving low-pass `min(40,0.4*fs)` | Range and flatline flags |
+| Temperature | Three-observation median with edge context | Range and flatline flags |
 
-Detection copies are temporary calculations for the audit. Only the single level-preserving cleaned waveform is retained and passed to the router. The same waveform is the source for selected-encoder formatting.
+Optional electrical `powerline_hz` accepts numeric `0`, `50` or `60`; no frequency is assumed. A declared notch band must fit below native Nyquist. Detection copies and quality measurements are audit-only. Detector failure preserves the cleaned waveform and records unavailability rather than synthesizing normal physiology.
 
-Optional electrical `metadata.powerline_hz` accepts numeric `0`, `50` or `60`; no frequency is assumed. A declared frequency applies a second-order ±1 Hz band-stop, rejecting bands outside Nyquist. Supplied leads, references and axis conventions are retained; channels are neither dropped nor synthesized.
+## Processed signals
 
-## Formatting after selection
+`signal_condition: processed` skips all NeuroKit cleaning, peak detection and quality calculations. Validation and native window alignment still run. Provided samples are unchanged apart from float32 representation. Mantis retains its own frozen normalization and patch-statistics operations.
 
-Before routing, type, duration and dimension checks produce a two-entry eligibility mask. These checks allocate no resampled arrays or encoder frames. If neither encoder is eligible, the request fails explicitly. The router processes the native cleaned channels and question, masks unavailable encoder logits, and chooses one encoder.
+## Native window alignment
 
-Only then does formatting run for that encoder. Downsampling adds a fourth-order anti-alias low-pass at `0.4*target_rate`. Polyphase conversion uses linear boundary extension and restores the mean after centering. No per-window z-score is applied. Upsampling changes the grid, not the measured bandwidth.
+Use the supplied recording as context, without a fixed physiological window duration. Let `L=32*floor(N/32)` for a channel with `N` samples. Encode the complete array once when aligned; otherwise encode the length-`L` prefix and suffix. This covers all real measurements without resampling, interpolation, amplitude normalization or external sample padding.
 
-| Selected encoder | Rate | Framing |
+| Recording | Encoder windows | Elapsed intervals |
 | --- | --- | --- |
-| NormWear | 65 Hz | Complete 390-sample frames; stride 390; per-frame detrending and Gaussian smoothing, sigma 1.3 |
-| Mantis ECG/EEG | 500 Hz | Complete 512-sample frames; stride 256 |
-| Mantis accelerometer/gyroscope | 100 Hz | Same |
-| Mantis PPG | 125 Hz | Same |
-| Mantis EDA/respiration/temperature | 32 Hz | Same |
-| Mantis EMG | 2000 Hz | Same |
+| 10 s at 125 Hz, 1,250 samples | Two × 1,248 samples | `[0,9.984]`, `[0.016,10]` seconds |
+| 6 s at 65 Hz, 390 samples | Two × 384 samples | `[0,384/65]`, `[6/65,6]` seconds |
+| 8 s at 64 Hz, 512 samples | One × 512 samples | `[0,8]` seconds |
 
-A final overlapping complete frame covers any trailing interval. No sample padding enters either encoder. NormWear formatting is unavailable for temperature/raw EMG and requires at least six seconds. The 32 Hz Mantis inputs require 16 seconds. Eligibility applies to every channel in the request.
+Numerical validity requires at least 64 native measurements: the frozen model computes sample standard deviation in 32 patches and needs two observations per patch. This is not a physiological minimum. Defaults cap each channel at 1,000,000 samples and each request at 64 channels/128 embeddings. Equal-length encoder batches are bounded by the configured sample budget. No recording is shortened to fit a budget; over-budget requests fail explicitly.
 
-Defaults allow 64 physical channels, 1,000,000 samples per channel, four simultaneous NormWear channels, 640 Mantis channel/frame pairs and 1,024 encoded signal tokens. Five minutes of single-channel 500 Hz ECG uses 585 Mantis frames.
+## Physiological scope
 
-## Quality boundary
+The recording duration remains available through elapsed start/end encoding. Normalized coordinates alone would discard physical time scale. All supplied context is represented, although the frozen encoder still compresses it into 32 patches.
 
-Audits retain native rates/units, raw range, flatline flags, processing methods, detector warnings and event times in seconds. ECG/PPG detections within 0.25 seconds of either boundary are recorded separately and excluded from template measurements. Detector failure preserves the waveform, since abnormal physiology may be relevant to the question.
+Acceptance does not establish suitability for every question. Pulse shape, pulse rate, respiration and HRV require different evidence and durations. NeuroKit, for example, recommends minutes of high-quality data for several frequency-domain HRV measures. Short recordings are not extended to pretend that this information exists. Generalization and calibration need evaluation by task, duration, rate and domain.
 
-Peaks, quality scores, EMG envelopes and audit metadata are not CNN/MLP or decision-head input features. Template quality is not decision confidence. Full HRV tables, ECG delineation and ICA are not computed per prediction. Support for a signal type alone does not establish accuracy on every possible question.
-
-References: [NeuroKit custom processing](https://neuropsychology.github.io/NeuroKit/examples/bio_custom/bio_custom.html), [ECG](https://neuropsychology.github.io/NeuroKit/functions/ecg.html), [PPG](https://neuropsychology.github.io/NeuroKit/functions/ppg.html), [EDA](https://neuropsychology.github.io/NeuroKit/functions/eda.html), [respiration](https://neuropsychology.github.io/NeuroKit/functions/rsp.html), [EMG](https://neuropsychology.github.io/NeuroKit/functions/emg.html).
+References: [Mantis data format](https://github.com/vfeofanov/mantis#prepare-data), [NeuroKit custom processing](https://neuropsychology.github.io/NeuroKit/examples/bio_custom/bio_custom.html), [PPG](https://neuropsychology.github.io/NeuroKit/functions/ppg.html), [HRV duration requirements](https://neuropsychology.github.io/NeuroKit/functions/hrv.html#hrv-frequency).

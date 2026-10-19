@@ -1,4 +1,4 @@
-"""Metadata-free bidirectional self-attention and signal cross-attention."""
+"""Text self-attention and signal cross-attention with elapsed interval encoding."""
 
 import math
 
@@ -7,13 +7,16 @@ from torch import nn
 from torch.nn import functional as F
 
 
-def temporal_encoding(times, width):
-    """Map relative times [B,M] to fixed sinusoidal encodings [B,M,width]."""
-    count = math.ceil(width/2)
-    frequencies = torch.exp(-math.log(10000) * torch.arange(
-        count, device=times.device, dtype=times.dtype) / max(1, count-1))
-    angles = times[..., None] * frequencies * (2*math.pi)
-    return torch.stack((angles.sin(), angles.cos()), -1).flatten(-2)[..., :width]
+def interval_encoding(intervals_s, width):
+    """Encode elapsed start/end seconds [B,M,2] as fixed vectors [B,M,width]."""
+    def encode(seconds, dimension):
+        count = math.ceil(dimension/2)
+        frequencies = torch.exp(-math.log(10000) * torch.arange(
+            count, device=seconds.device, dtype=seconds.dtype) / max(1, count-1))
+        angles = seconds[..., None] * frequencies * (2*math.pi)
+        return torch.stack((angles.sin(), angles.cos()), -1).flatten(-2)[..., :dimension]
+    first = width // 2
+    return torch.cat((encode(intervals_s[..., 0], first), encode(intervals_s[..., 1], width-first)), -1)
 
 
 class CrossAttention(nn.Module):
@@ -21,7 +24,7 @@ class CrossAttention(nn.Module):
         super().__init__()
         self.heads, self.dropout = heads, dropout
         self.query = nn.Linear(width, width)
-        self.key, self.value = nn.Linear(768, width), nn.Linear(768, width)
+        self.key, self.value = nn.Linear(512, width), nn.Linear(512, width)
         self.output = nn.Linear(width, width)
 
     def forward(self, text, signal, time_encoding, signal_mask):
@@ -29,7 +32,8 @@ class CrossAttention(nn.Module):
             return x.reshape(x.shape[0], x.shape[1], self.heads, -1).transpose(1, 2)
         q = split(self.query(text))
         k = split(self.key(signal) + time_encoding)
-        v = split(self.value(signal))
+        # Values must carry time too: a single-key softmax is always one.
+        v = split(self.value(signal) + time_encoding)
         result = F.scaled_dot_product_attention(q, k, v, attn_mask=signal_mask[:, None, None, :],
                          dropout_p=self.dropout if self.training else 0.0, is_causal=False)
         return self.output(result.transpose(1, 2).reshape(text.shape))
@@ -60,7 +64,7 @@ class DecisionHead(nn.Module):
 
     def __init__(self, width=256, layers=2, heads=4, dropout=0.1):
         super().__init__()
-        if width <= 0 or heads <= 0 or width % heads or layers <= 0 or not 0 <= dropout < 1:
+        if width < 2 or heads <= 0 or width % heads or layers <= 0 or not 0 <= dropout < 1:
             raise ValueError("Invalid decision-head dimensions or dropout")
         self.width = width
         self.config = dict(width=width, layers=layers, heads=heads, dropout=dropout)
@@ -70,10 +74,10 @@ class DecisionHead(nn.Module):
         self.final_norm = nn.LayerNorm(width)
         self.scorer = nn.Linear(width, 1)
 
-    def forward(self, signal, signal_mask, times, question, criteria, criteria_mask):
+    def forward(self, signal, signal_mask, intervals_s, question, criteria, criteria_mask):
         batch, count, hidden = signal.shape
-        if hidden != 768 or signal_mask.shape != (batch, count) or times.shape != (batch, count):
-            raise ValueError("Head expects signal [B,M,768], relative times [B,M], and mask [B,M]")
+        if hidden != 512 or signal_mask.shape != (batch, count) or intervals_s.shape != (batch, count, 2):
+            raise ValueError("Head expects signal [B,M,512], intervals [B,M,2] in seconds, and mask [B,M]")
         if question.shape != (batch, 768):
             raise ValueError("Question must have shape [B,768]")
         if criteria.ndim != 3 or criteria.shape[0] != batch or criteria.shape[-1] != 768:
@@ -82,16 +86,16 @@ class DecisionHead(nn.Module):
             raise ValueError("Boolean masks must match signal and criteria")
         if not signal_mask.any(-1).all() or not (criteria_mask.sum(-1) >= 2).all():
             raise ValueError("Need real signal vectors and at least two real criteria")
-        if not all(torch.isfinite(x).all() for x in (signal, times, question, criteria)):
+        if not all(torch.isfinite(x).all() for x in (signal, intervals_s, question, criteria)):
             raise ValueError("Head inputs must be finite")
-        if ((times < 0) | (times > 1)).any():
-            raise ValueError("Relative times must lie within [0,1]")
+        if ((intervals_s[..., 0] < 0) | (intervals_s[..., 1] <= intervals_s[..., 0]))[signal_mask].any():
+            raise ValueError("Real signal intervals need nonnegative start and later end times")
         text = self.text_input(torch.cat((question[:, None], criteria), dim=1))
         roles = torch.cat((self.roles[:1], self.roles[1:].expand(criteria.shape[1], -1)))
         text = text + roles[None]
         question_mask = torch.ones(batch, 1, dtype=torch.bool, device=signal.device)
         text_mask = torch.cat((question_mask, criteria_mask), dim=1)
-        time_encoding = temporal_encoding(times, self.width)
+        time_encoding = interval_encoding(intervals_s, self.width)
         for block in self.blocks:
             text = block(text, text_mask, signal, signal_mask, time_encoding)
         logits = self.scorer(self.final_norm(text[:, 1:])).squeeze(-1)

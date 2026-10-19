@@ -61,7 +61,7 @@ def test_offline_training_metrics_artifact_and_resume(tmp_path, monkeypatch, wan
         write_dataset(path, split, f"{split}:w", split)
         paths[split] = str(path)
     config = {"assets": {}, "data": paths, "batch_size": 1, "threads": 2,
-              "optim": {"epochs": 2, "warmup_epochs": 1, "lr": 0.001},
+              "optim": {"epochs": 2, "lr": 0.001},
               "wandb": {"mode": "offline", "project": "paya-test", "log_every": 1}}
     config_path = tmp_path/"training.yaml"
     config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
@@ -94,17 +94,17 @@ def test_offline_training_metrics_artifact_and_resume(tmp_path, monkeypatch, wan
     assert latest["training"]["global_step"] == 2
     assert latest["training"]["wandb"]["id"] == wandb_capture.runs[-1].id
     assert exported["training"] is None
-    assert set(exported["learned"]) == {"router", "head"}
+    assert set(exported["learned"]) == {"head"}
     assert exported["contract"].endswith(VERSION)
     logs = [row for _, row in wandb_capture.logs]
     assert any("train/answer_loss" in row and "train/router_loss" not in row for row in logs)
-    assert any("train/router_loss" in row for row in logs)
+    assert all("train/router_loss" not in row for row in logs)
     selected = [row for row in logs if "selection/nll" in row]
     assert selected[-1]["step"] == 2
-    assert selected[-1]["selection/route_fraction/normwear"] + selected[-1]["selection/route_fraction/mantis"] == 1
+    assert not any("route" in name for name in selected[-1])
     assert all(name in selected[-1] for name in ("selection/accuracy", "selection/brier", "selection/ece_15"))
-    assert len(wandb_capture.artifacts) == 1
-    _, artifact, kwargs = wandb_capture.artifacts[0]
+    assert len(wandb_capture.artifacts) >= 1
+    _, artifact, kwargs = wandb_capture.artifacts[-1]
     assert artifact.type == "model" and kwargs["aliases"] == ["best"]
     assert artifact.metadata["version"] == VERSION
     assert "decision.pt" in artifact.manifest.entries

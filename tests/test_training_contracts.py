@@ -32,43 +32,45 @@ def test_new_data_contract_and_split_isolation(tmp_path):
 
 def test_fp32_cache_reuses_only_matching_preparation_and_detects_corruption(model, tmp_path):
     cache = FeatureCache(tmp_path)
-    prepared = model.preprocessor.clean(state())
-    first = cache.get_or_encode(model, prepared, 1)
-    count = model.encoders[1].calls
-    second = cache.get_or_encode(model, prepared, 1)
-    assert model.encoders[1].calls == count
+    prepared = model.preprocessor.prepare(state())
+    first = cache.get_or_encode(model, prepared)
+    count = model.encoder.calls
+    second = cache.get_or_encode(model, prepared)
+    assert model.encoder.calls == count
     torch.testing.assert_close(first.values, second.values, atol=0, rtol=0)
-    torch.testing.assert_close(first.times, second.times, atol=0, rtol=0)
+    torch.testing.assert_close(first.intervals_s, second.intervals_s, atol=0, rtol=0)
     changed = state(); changed["signals"][0]["samples"][0] += 0.1
-    cache.get_or_encode(model, model.preprocessor.clean(changed), 1)
-    assert model.encoders[1].calls == count+1
+    cache.get_or_encode(model, model.preprocessor.prepare(changed))
+    assert model.encoder.calls == count+1
     path = next(tmp_path.glob("*.pt"))
     payload = torch.load(path, weights_only=True)
     payload["values"][0, 0] += 1
     torch.save(payload, path)
-    key = payload["binding"]["cleaned"]
-    prepared_to_load = prepared if prepared.identity == key else model.preprocessor.clean(changed)
+    key = payload["binding"]["prepared"]
+    prepared_to_load = prepared if prepared.identity == key else model.preprocessor.prepare(changed)
     with pytest.raises(ValueError, match="content changed"):
-        cache.get_or_encode(model, prepared_to_load, 1)
+        cache.get_or_encode(model, prepared_to_load)
 
 
-def test_feature_cache_hit_skips_formatting_and_remains_encoder_specific(model, tmp_path, monkeypatch):
+def test_feature_cache_hit_skips_formatting_and_binds_condition_and_rate(model, tmp_path, monkeypatch):
     cache = FeatureCache(tmp_path)
-    cleaned = model.preprocessor.clean(state())
     calls = []
-    original = model.preprocessor.format_for_encoder
-    def format_signal(signal, expert):
-        calls.append(expert)
-        return original(signal, expert)
-    monkeypatch.setattr(model.preprocessor, "format_for_encoder", format_signal)
-    for expert in (0, 1, 0, 1):
-        cache.get_or_encode(model, cleaned, expert)
-    assert calls == [0, 1]
-    assert len(list(tmp_path.glob("*.pt"))) == 2
+    original = model.preprocessor.format
+    def format_signal(signal):
+        calls.append(signal.identity)
+        return original(signal)
+    monkeypatch.setattr(model.preprocessor, "format", format_signal)
+    raw = model.preprocessor.prepare(state())
+    processed = model.preprocessor.prepare(state(condition="processed"))
+    different_rate = model.preprocessor.prepare(state(rate=250, duration=12, condition="processed"))
+    for signal in (raw, processed, different_rate, raw, processed, different_rate):
+        cache.get_or_encode(model, signal)
+    assert len(calls) == len(list(tmp_path.glob("*.pt"))) == 3
     for path in tmp_path.glob("*.pt"):
         payload = torch.load(path, weights_only=True)
-        assert payload["times"].shape == (len(payload["values"]),)
-        assert "positions" not in payload
+        assert payload["values"].shape[1] == 512
+        assert payload["intervals_s"].shape == (len(payload["values"]), 2)
+        assert "expert" not in payload["binding"]
 
 
 def test_checkpoint_rejects_a_different_text_and_position_contract(model, tmp_path):
@@ -78,7 +80,17 @@ def test_checkpoint_rejects_a_different_text_and_position_contract(model, tmp_pa
     payload["identity"]["architecture"]["text_roles"].append("ending")
     payload["identity"]["architecture"]["signal_position"] = "time-scale-cls"
     torch.save(payload, path)
-    with pytest.raises(ValueError, match="two-encoder"):
+    with pytest.raises(ValueError, match="Mantis"):
+        load_checkpoint(path, model)
+
+
+def test_checkpoint_rejects_unused_learned_modules(model, tmp_path):
+    path = tmp_path/"unexpected-module.pt"
+    save_checkpoint(path, model)
+    payload = torch.load(path, weights_only=True)
+    payload["learned"]["unused"] = {}
+    torch.save(payload, path)
+    with pytest.raises(ValueError, match="only decision-head"):
         load_checkpoint(path, model)
 
 
@@ -91,10 +103,10 @@ def test_checkpoint_roundtrip_rejects_incompatible_head_and_preserves_output(mod
     after = other.predict(state(), "q", ["a", "b", "c"])
     assert before == after
     payload = torch.load(path, weights_only=True)
-    assert set(payload["learned"]) == {"router", "head"}
-    assert "encoders" not in payload
+    assert set(payload["learned"]) == {"head"}
+    assert "encoder" not in payload
     torch.save({"contract": "unrecognized", "head": {}}, tmp_path/"invalid.pt")
-    with pytest.raises(ValueError, match="two-encoder"):
+    with pytest.raises(ValueError, match="Mantis"):
         load_checkpoint(tmp_path/"invalid.pt", other)
 
 
@@ -110,7 +122,7 @@ def test_old_text_banks_and_unfitted_temperatures_are_rejected(model, tmp_path):
         save_checkpoint(tmp_path/"unfitted.pt", model)
 
 
-def test_outcome_temperature_is_bound_to_frozen_router_and_head(model, tmp_path):
+def test_outcome_temperature_is_bound_to_decision_head(model, tmp_path):
     calibration = write_dataset(tmp_path/"calibration.jsonl", "heldout", "heldout:w", "heldout")
     fitted = fit_temperature(model, calibration, {"group_id": ["train"]})
     assert fitted["learned_sha256"] == learned_digest(model) and model.temperature > 0
@@ -131,7 +143,7 @@ def test_outcome_temperature_is_bound_to_frozen_router_and_head(model, tmp_path)
 def test_bundle_roundtrip_and_integrity_with_tiny_asset_doubles(model, tmp_path, monkeypatch):
     import paya.export as module
     assets = {}
-    for name in ("normwear", "mantis", "text"):
+    for name in ("mantis", "text"):
         root = tmp_path/name; root.mkdir()
         (root/"weights.txt").write_text(name, encoding="utf-8")
         assets[name] = root
@@ -149,12 +161,12 @@ def test_bundle_roundtrip_and_integrity_with_tiny_asset_doubles(model, tmp_path,
         load_bundle(root)
 
 
-def test_training_entrypoint_warmup_routing_and_resume_with_tiny_encoders(tmp_path, monkeypatch):
+def test_training_entrypoint_and_resume_with_frozen_encoder(tmp_path, monkeypatch):
     import yaml
     import paya.train as module
     model = new_model()
-    frozen = {name: value.clone() for name, value in model.encoders.state_dict().items()}
-    original_gate = model.router.gate[-1].weight.detach().clone()
+    frozen = {name: value.clone() for name, value in model.encoder.state_dict().items()}
+    original_head = model.head.scorer.weight.detach().clone()
     monkeypatch.setattr(module.PayaModel, "from_assets", lambda *args, **kwargs: model)
     paths = {}
     for split in ("train", "selection", "calibration", "test"):
@@ -163,15 +175,15 @@ def test_training_entrypoint_warmup_routing_and_resume_with_tiny_encoders(tmp_pa
         paths[split] = str(path)
     config = {"assets": {}, "data": paths, "batch_size": 1, "threads": 2,
               "feature_cache": str(tmp_path/"features"),
-              "optim": {"epochs": 2, "warmup_epochs": 1, "lr": 0.001}}
+              "optim": {"epochs": 2, "lr": 0.001}}
     config_path = tmp_path/"config.yaml"
     config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
     _, history = module.train(config_path, tmp_path/"run")
-    assert [row["phase"] for row in history] == ["head_warmup", "routed"]
+    assert [row["phase"] for row in history] == ["decision_head", "decision_head"]
     best = torch.load(tmp_path/"run"/"best.pt", weights_only=True)
-    assert best["training"]["epoch"] == 2  # never select an untrained warmup router
-    assert not torch.equal(model.router.gate[-1].weight, original_gate)
-    for name, value in model.encoders.state_dict().items():
+    assert best["training"]["epoch"] in (1, 2)
+    assert not torch.equal(model.head.scorer.weight, original_head)
+    for name, value in model.encoder.state_dict().items():
         torch.testing.assert_close(value, frozen[name], rtol=0, atol=0)
     _, resumed = module.train(config_path, tmp_path/"run", resume=tmp_path/"run"/"last.pt")
     assert resumed == []

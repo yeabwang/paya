@@ -65,7 +65,7 @@ def clean_channel(channel):
     """Return one cleaned waveform and native-time physiological observations."""
     raw = channel.samples.astype(np.float64)
     rate, kind = channel.rate, channel.sensor_type
-    audit = {"sensor_type": kind, "sampling_rate_hz": rate, "unit": channel.metadata["unit"],
+    audit = {"sensor_type": kind, "sampling_rate_hz": rate,
              "observations": len(raw), "flatline": bool(np.ptp(raw) == 0),
              "minimum": float(raw.min()), "maximum": float(raw.max())}
     values = raw

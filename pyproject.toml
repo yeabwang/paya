@@ -25,9 +25,6 @@ include = ["paya*"]
 [tool.setuptools.dynamic]
 version = {attr = "paya.provenance.PACKAGE_VERSION"}
 
-[tool.setuptools.package-data]
-"paya.vendor" = ["LICENSE", "SOURCE.md"]
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = ["integration: requires pinned pretrained encoder assets"]

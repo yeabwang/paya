@@ -1,17 +1,12 @@
 seed: 42
 threads: 4
 assets:
-  normwear: third-party/normwear
   mantis: third-party/mantis
   text: third-party/biolord
 preparation:
   max_channels: 64
   max_samples: 1000000
-  max_normwear_channels: 4
-  max_mantis_frames: 640
-  max_signal_tokens: 1024
-  time_bins: 8
-  filter_order: 4
+  max_signal_tokens: 128
 head:
   width: 256
   layers: 2
@@ -26,13 +21,8 @@ feature_cache: cache/v1/features
 batch_size: 8
 optim:
   epochs: 16
-  warmup_epochs: 2
   lr: 0.0003
   weight_decay: 0.01
-  router_loss_weight: 1.0
-  route_temperature: 1.0
-  cost_weight: 0.0
-  expert_costs: [1.0, 1.0]
 wandb:
   project: paya
   mode: online

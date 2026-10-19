@@ -1,4 +1,4 @@
-"""Save router/head weights and validate model and calibration identities."""
+"""Save decision-head weights and validate model and calibration identities."""
 
 import hashlib
 from pathlib import Path
@@ -9,8 +9,7 @@ from .provenance import RUNTIME_CONTRACT
 
 
 def learned_state(model):
-    return {name: {key: tensor.detach().cpu().clone() for key, tensor in getattr(model, name).state_dict().items()}
-            for name in ("router", "head")}
+    return {"head": {key: tensor.detach().cpu().clone() for key, tensor in model.head.state_dict().items()}}
 
 
 def learned_digest(model):
@@ -30,7 +29,7 @@ def save_checkpoint(path, model, training=None):
     if model.calibration is None and temperature != 1.0:
         raise ValueError("A non-unit temperature needs outcome-fitted calibration provenance")
     if model.calibration and model.calibration["learned_sha256"] != learned_digest(model):
-        raise ValueError("Calibration does not match current router/head weights")
+        raise ValueError("Calibration does not match current decision-head weights")
     if model.calibration and abs(model.calibration["temperature"]-temperature) > 1e-7:
         raise ValueError("Calibration temperature changed")
     path = Path(path)
@@ -46,9 +45,10 @@ def save_checkpoint(path, model, training=None):
 def load_checkpoint(path, model):
     payload = torch.load(path, map_location="cpu", weights_only=True)
     if payload.get("contract") != RUNTIME_CONTRACT or payload.get("identity") != model.identity():
-        raise ValueError("Checkpoint is not the exact current two-encoder architecture/assets/preparation")
-    for module in ("router", "head"):
-        getattr(model, module).load_state_dict(payload["learned"][module], strict=True)
+        raise ValueError("Checkpoint is not the exact current Mantis architecture/assets/preparation")
+    if set(payload.get("learned", {})) != {"head"}:
+        raise ValueError("Checkpoint must contain only decision-head weights")
+    model.head.load_state_dict(payload["learned"]["head"], strict=True)
     temperature = float(payload["temperature"])
     if not 0 < temperature < float("inf"):
         raise ValueError("Invalid checkpoint temperature")

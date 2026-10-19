@@ -9,34 +9,40 @@ from paya.inference import load_bundle
 
 model = load_bundle("artifacts/paya-v1")
 state = {"signals": [{
-    "samples": ecg_samples,
-    "metadata": {"sensor_type": "ecg", "sampling_rate_hz": 500,
-                 "unit": "mV", "lead": "II"},
+    "samples": ppg_samples,
+    "metadata": {
+        "sensor_type": "ppg",
+        "sampling_rate_hz": 125,
+        "duration_s": 10,
+        "signal_condition": "processed",
+    },
 }]}
 result = model.predict(
     state=state,
-    question="Which heart-rate category describes this signal?",
-    criteria=["Slow heart rate", "Normal heart rate", "Fast heart rate"],
+    question="Which pulse-rate category describes this recording?",
+    criteria=["Slow", "Normal", "Fast"],
 )
 ```
 
-Example response:
+Illustrative output:
 
 ```json
-{"choice": "Normal heart rate", "probabilities": [0.1, 0.8, 0.1], "confidence": 0.8}
+{"choice": "Normal", "probabilities": [0.1, 0.8, 0.1], "confidence": 0.8}
 ```
 
-Probabilities follow the supplied criteria order. Confidence is the chosen answer's probability. Each channel requires finite samples, a unit, a supported type and a finite positive numeric sampling rate. Supported types are ECG, EEG, accelerometer, gyroscope, PPG, EDA, respiration, temperature and EMG; unknown or empty types and rates are rejected. Different native rates require an explicit shared `start_time_s` and matching measured intervals.
+Each channel requires `sensor_type`, `sampling_rate_hz` and `duration_s`. Rates and durations must be finite positive numbers, with `duration_s = sample_count / sampling_rate_hz`. Supported types are ECG, EEG, accelerometer, gyroscope, PPG, EDA, respiration, temperature and EMG. Unit and lead fields are not used; samples retain their supplied amplitude scale. Channels must cover the same measured interval; different rates require explicit matching `start_time_s` values.
+
+`signal_condition` accepts `raw` (default) or `processed`. Raw channels receive native-rate NeuroKit cleaning. Processed channels bypass NeuroKit. Neither path resamples the signal or applies an additional amplitude normalization.
 
 ## Architecture
 
-`signal + metadata → native-rate NeuroKit cleaning → question-conditioned router → selected encoder formatting → one frozen signal encoder → fixed width adapter → shared decision head`
+`signal + metadata → validate → clean raw channels only → native variable-length formatting → frozen MantisV2 → shared decision head`
 
-- **Frozen:** NormWear, MantisV2 and BioLORD-2023. BioLORD encodes the question and each choice separately.
-- **Trainable:** the waveform/question router and the shared head's self-attention, signal cross-attention, feed-forward layers and candidate scorer.
-- One cleaned waveform per physical channel enters the router. Resampling and framing run only for the selected encoder. Metadata controls cleaning, compatibility checks and that formatting. The head receives waveform vectors, text vectors, relative times and padding masks. Output adapters preserve NormWear's 768 dimensions and append 256 zeros to Mantis's 512 dimensions.
+Frozen BioLORD-2023 encodes the question and each choice separately for the head. Only the decision head is trainable. It uses text self-attention, signal cross-attention, feed-forward layers and a shared candidate scorer.
 
-See [architecture and layer dimensions](docs/architecture-fix.md), [signal preparation](docs/preprocessing.md) and [training and W&B](docs/training.md).
+Formatting retains the supplied recording context. A length divisible by 32 is encoded once; otherwise, an overlapping prefix/suffix pair covers every sample. For 10 seconds at 125 Hz, Mantis receives `[2,1,1248]` and returns `[2,512]`. Six seconds at 65 Hz becomes `[2,1,384] → [2,512]`. Elapsed interval endpoints accompany the signal embeddings. No router or output-width adapter is present.
+
+The unmodified Mantis statistics require at least 64 native samples. This numerical minimum does not establish physiological sufficiency for a question. Resource budgets and raw-filter requirements also apply. See [architecture and dimensions](docs/architecture-fix.md), [signal preparation](docs/preprocessing.md) and [training and W&B](docs/training.md).
 
 ## Install and verify
 
@@ -49,6 +55,6 @@ python -m pytest -q -m "not integration" --basetemp cache/pytest-unit
 python -m pytest -q -m integration --basetemp cache/pytest-integration
 ```
 
-All three encoders need local assets and `source.json` checksum records under the paths in [config/paya.yaml](config/paya.yaml). The integration test exercises real frozen weights and records shapes in `artifacts/architecture-shapes.json`.
+Mantis and BioLORD need local assets and `source.json` checksum records at the paths in [config/paya.yaml](config/paya.yaml). The integration test exercises real frozen weights and writes `artifacts/architecture-shapes.json`.
 
-Paya's package and artifact versions are defined in [paya/provenance.py](paya/provenance.py): first release `v1` (Python package `1.0.0`). Upstream model names and pinned revisions retain their published identifiers. Decision accuracy, calibration and latency require trained weights and evaluation on independent recordings.
+Paya versions are defined in [paya/provenance.py](paya/provenance.py): `v1`, Python package `1.0.0`. Accuracy, calibration, generalization and latency require trained weights and independent evaluation.

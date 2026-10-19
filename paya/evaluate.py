@@ -17,9 +17,9 @@ def collect(model, dataset, batch_size=8, cache=None):
     records = []
     for rows in dataset.batches(batch_size):
         result = model(make_batch(model, rows), cache=cache)
-        for row, logits, route in zip(rows, result["logits"], result["routes"].tolist()):
+        for row, logits in zip(rows, result["logits"]):
             records.append({"logits": logits[:len(row["criteria"])].cpu().tolist(),
-                            "target": row["target"], "criteria": row["criteria"], "route": route,
+                            "target": row["target"], "criteria": row["criteria"],
                             **{k: row[k] for k in ("source_id", "group_id", "recording_id")}})
     return records
 

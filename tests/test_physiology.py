@@ -71,7 +71,7 @@ def test_ppg_cleaning_keeps_intensity_and_finds_native_pulses():
 
 def test_low_rate_eda_keeps_tonic_level_and_detects_responses():
     rate = 4
-    t = np.arange(64*rate)/rate
+    t = np.arange(128*rate)/rate
     values = 5 + 0.005*t
     for onset in (10, 35):
         elapsed = np.maximum(0, t-onset)
@@ -81,8 +81,8 @@ def test_low_rate_eda_keeps_tonic_level_and_detects_responses():
     peaks = audit["responses"]["SCR_Peaks"]
     assert any(10 < peak < 15 for peak in peaks) and any(35 < peak < 40 for peak in peaks)
     processor = SignalPreprocessor()
-    cleaned = processor.clean(request("eda", values, rate))
-    assert processor.format_for_encoder(cleaned, 1).frames.mean() > 5
+    cleaned = processor.prepare(request("eda", values, rate))
+    assert torch.stack(processor.format(cleaned).frames).mean() > 5
     json.dumps(cleaned.audit, allow_nan=False)
 
 
@@ -116,8 +116,8 @@ def test_emg_envelope_checks_use_the_actual_native_rate():
 
 def test_temperature_level_trend_and_isolated_spike():
     processor = SignalPreprocessor()
-    constant = processor.clean(request("temperature", [37.0]*16, 1))
-    torch.testing.assert_close(processor.format_for_encoder(constant, 1).frames, torch.full((1, 1, 512), 37.0), atol=0, rtol=0)
+    constant = processor.prepare(request("temperature", [37.0]*512, 1))
+    torch.testing.assert_close(torch.stack(processor.format(constant).frames), torch.full((1, 1, 512), 37.0), atol=0, rtol=0)
     t = np.arange(32)
     values = 36.5+0.01*t
     values[15] += 5
@@ -140,19 +140,18 @@ def test_failed_detector_records_unavailability_without_destroying_waveform(monk
     def failed(*args, **kwargs):
         raise ValueError("No reliable beats")
     monkeypatch.setattr(nk, "ecg_peaks", failed)
-    cleaned = SignalPreprocessor().clean(request("ecg", ecg(6)[0], 500))
-    assert cleaned.compatible.all()
+    cleaned = SignalPreprocessor().prepare(request("ecg", ecg(6)[0], 500))
     assert cleaned.audit["quality"][0]["beats"]["status"] == "unavailable"
     assert all(np.isfinite(channel.samples).all() for channel in cleaned.channels)
 
 
 def test_quality_records_are_audit_only_and_old_preparations_are_rejected(model):
-    prepared = model.preprocessor.clean(request("ecg", ecg(6)[0], 500))
+    prepared = model.preprocessor.prepare(request("ecg", ecg(6)[0], 500))
     before = model.predict(prepared, "Which category?", ["a", "b"])
     prepared.audit["quality"] = [{"template_quality": {"median": -1}, "dataset_id": "unrelated"}]
     assert model.predict(prepared, "Which category?", ["a", "b"]) == before
     prepared.audit["preparation"] = {"contract": "unrecognized"}
-    with pytest.raises(ValueError, match="physiological preprocessing"):
+    with pytest.raises(ValueError, match="current preprocessing"):
         model.predict(prepared, "Which category?", ["a", "b"])
 
 
@@ -162,28 +161,25 @@ def test_eeg_quality_flags_do_not_remove_or_rereference_channels():
     channels = []
     for i in range(6):
         values = 20*np.sin(2*np.pi*(8+i)*t)+(50 if i == 5 else i)
-        channels.append(request("eeg", values, rate, lead=f"channel-{i}", reference="linked-mastoids")["signals"][0])
+        channels.append(request("eeg", values, rate, placement=f"channel-{i}", reference="linked-mastoids")["signals"][0])
     processor = SignalPreprocessor()
-    prepared = processor.clean({"signals": channels})
-    assert not prepared.compatible[0] and prepared.compatible[1]
+    prepared = processor.prepare({"signals": channels})
     assert len(prepared.audit["quality"]) == 6
     for audit in prepared.audit["quality"]:
         assert audit["channel_quality"]["status"] == "available"
-    # Each native channel contributes 31 real frames; none are silently discarded.
-    assert len(processor.format_for_encoder(prepared, 1).frames) == 6*31
+    # Each native channel contributes one full-context window; none are silently discarded.
+    assert len(processor.format(prepared).frames) == 6
     assert len(prepared.channels) == 6
     json.dumps(prepared.audit, allow_nan=False)
 
 
 def test_five_minute_ecg_is_fully_covered_without_time_compression():
     processor = SignalPreprocessor()
-    prepared = processor.clean(request("ecg", ecg(300)[0], 500))
-    assert not prepared.compatible[0]  # NormWear's 1024-token budget still applies
-    mantis = processor.format_for_encoder(prepared, 1)
-    assert mantis.frames.shape == (585, 1, 512)
-    assert mantis.bounds[0, 0] == 0 and mantis.bounds[-1, 1] == 1
-    assert torch.all(mantis.bounds[1:, 0] <= mantis.bounds[:-1, 1])
-    torch.testing.assert_close(mantis.bounds[0, 1]*300, torch.tensor(512/500), rtol=1e-6, atol=1e-6)
+    prepared = processor.prepare(request("ecg", ecg(300)[0], 500))
+    mantis = processor.format(prepared)
+    assert [tuple(frame.shape) for frame in mantis.frames] == [(1, 149984), (1, 149984)]
+    assert mantis.intervals_s[0, 0] == 0 and mantis.intervals_s[-1, 1] == 300
+    torch.testing.assert_close(mantis.intervals_s, torch.tensor([[0, 149984/500], [16/500, 300]]))
 
 
 @pytest.mark.parametrize("frequency", ["50", True, None, 45, float("nan")])
