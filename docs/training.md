@@ -26,7 +26,7 @@ python -m paya.evaluate --config config/paya.yaml --checkpoint runs/paya-v1/cali
 python -m paya.export --config config/paya.yaml --checkpoint runs/paya-v1/calibrated.pt --output artifacts/paya-v1
 ```
 
-Training warms up the shared head across compatible experts, then learns routing from training-only expert NLL targets while training the head under top-1 dispatch. Only routed epochs can become `best.pt`, selected by selection NLL. Frozen encoders remain in evaluation mode. Calibration subsequently fits one global temperature on separate outcomes; it is bound to the router/head weights and invalidated by further training.
+Native cleaning is shared across routing and encoder formatting. Inference formats only the selected encoder; training can explicitly evaluate both eligible encoders to supervise the gate. Training warms up the shared head across compatible experts, then learns routing from training-only expert NLL targets while training the head under top-1 dispatch. Only routed epochs can become `best.pt`, selected by selection NLL. Frozen encoders remain in evaluation mode. Calibration subsequently fits one global temperature on separate outcomes; it is bound to the router/head weights and invalidated by further training.
 
 The run directory holds `history.jsonl`, resumable `last.pt` and `best.pt`. Resume with the same model, datasets and optimizer settings:
 

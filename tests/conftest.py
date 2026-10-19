@@ -49,13 +49,10 @@ class EncoderDouble(nn.Module):
         self.base = nn.Linear(1, width)
         self.calls = 0
 
-    def forward(self, view):
+    def forward(self, encoder_input):
         self.calls += 1
-        values = self.base(view.frames.mean(-1))
-        positions = values.new_zeros(len(values), 3)
-        positions[:, 0] = view.bounds.mean(-1)
-        positions[:, 2] = 1
-        return EncodedSignal(values, positions)
+        values = self.base(encoder_input.frames.mean(-1))
+        return EncodedSignal(values, encoder_input.bounds.mean(-1))
 
 
 def new_model():

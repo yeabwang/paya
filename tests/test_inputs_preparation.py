@@ -29,15 +29,18 @@ def test_strict_rates(rate):
 def test_nine_preparations_and_shapes(kind):
     rate = {"temperature": 1, "eda": 4, "ppg": 64, "accelerometer": 100,
             "gyroscope": 100, "respiration": 32, "emg": 2000}.get(kind, 500)
-    prepared = SignalPreprocessor().prepare(state(kind, rate, 16))
-    assert prepared.views[1] is not None
-    for view, length in zip(prepared.views, (390, 512)):
-        if view is not None:
-            assert view.frames.ndim == 3 and view.frames.shape[1:] == (1, length)
-            assert view.bounds.shape == (len(view.frames), 2)
-            assert view.frames.dtype == torch.float32 and torch.isfinite(view.frames).all()
+    processor = SignalPreprocessor()
+    cleaned = processor.clean(state(kind, rate, 16))
+    assert cleaned.channels[0].samples.shape == (rate*16,)
+    assert cleaned.channels[0].rate == rate and cleaned.compatible[1]
+    for expert, length in enumerate((390, 512)):
+        if cleaned.compatible[expert]:
+            encoded_input = processor.format_for_encoder(cleaned, expert)
+            assert encoded_input.frames.ndim == 3 and encoded_input.frames.shape[1:] == (1, length)
+            assert encoded_input.bounds.shape == (len(encoded_input.frames), 2)
+            assert encoded_input.frames.dtype == torch.float32 and torch.isfinite(encoded_input.frames).all()
     if kind in ("temperature", "emg"):
-        assert prepared.views[0] is None
+        assert not cleaned.compatible[0]
 
 
 def test_units_case_and_native_rates():
@@ -45,9 +48,9 @@ def test_units_case_and_native_rates():
     equivalent = copy.deepcopy(request)
     equivalent["signals"][0]["metadata"].update(sensor_type=" ECG ", unit="uV")
     equivalent["signals"][0]["samples"] = (np.asarray(request["signals"][0]["samples"])*1000).tolist()
-    a, b = SignalPreprocessor().prepare(request), SignalPreprocessor().prepare(equivalent)
-    for left, right in zip(a.views, b.views):
-        torch.testing.assert_close(left.frames, right.frames, atol=2e-6, rtol=2e-6)
+    a, b = SignalPreprocessor().clean(request), SignalPreprocessor().clean(equivalent)
+    for left, right in zip(a.channels, b.channels):
+        np.testing.assert_allclose(left.samples, right.samples, atol=2e-6, rtol=2e-6)
     slow_rate = validate_state(state("temperature", 0.25, 64))[0]
     assert slow_rate.rate == 0.25
 
@@ -55,10 +58,12 @@ def test_units_case_and_native_rates():
 def test_level_preservation_and_no_fake_padding():
     request = state("temperature", 1, 16)
     request["signals"][0]["samples"] = [37.0]*16
-    prepared = SignalPreprocessor().prepare(request)
-    torch.testing.assert_close(prepared.views[1].frames.mean(), torch.tensor(37.0), atol=0.02, rtol=0)
+    processor = SignalPreprocessor()
+    cleaned = processor.clean(request)
+    encoder_input = processor.format_for_encoder(cleaned, 1)
+    torch.testing.assert_close(encoder_input.frames.mean(), torch.tensor(37.0), atol=0.02, rtol=0)
     with pytest.raises(UnsupportedSignalError):
-        SignalPreprocessor().prepare(state("temperature", 1, 2))
+        processor.clean(state("temperature", 1, 2))
 
 
 def test_missing_rate_cannot_use_top_level_fallback():
@@ -112,7 +117,7 @@ def test_budget_checked_before_large_resampling():
     request = state()
     request["signals"][0]["metadata"]["sampling_rate_hz"] = 1e-100
     with pytest.raises(UnsupportedSignalError, match="budget"):
-        SignalPreprocessor().prepare(request)
+        SignalPreprocessor().clean(request)
     with pytest.raises(ValueError):
         PreparationConfig(time_bins=44)
 

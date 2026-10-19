@@ -31,7 +31,7 @@ def choice_loss(logits, targets, mask):
 def subset(batch, indices):
     ids = indices.tolist()
     return DecisionBatch([batch.states[i] for i in ids], batch.question[indices], batch.criteria[indices],
-                         batch.ending[indices], batch.criteria_mask[indices], [batch.descriptions[i] for i in ids])
+                         batch.criteria_mask[indices], [batch.descriptions[i] for i in ids])
 
 
 def expert_losses(model, batch, targets, cache=None, gradients=False):

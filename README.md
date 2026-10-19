@@ -30,11 +30,11 @@ Probabilities follow the supplied criteria order. Confidence is the chosen answe
 
 ## Architecture
 
-`signal + metadata → NeuroKit preparation → question-conditioned router → one frozen signal encoder → fixed width adapter → shared decision head`
+`signal + metadata → native-rate NeuroKit cleaning → question-conditioned router → selected encoder formatting → one frozen signal encoder → fixed width adapter → shared decision head`
 
-- **Frozen:** NormWear, MantisV2 and BioLORD-2023. BioLORD encodes the question, each choice and the internal ending separately.
+- **Frozen:** NormWear, MantisV2 and BioLORD-2023. BioLORD encodes the question and each choice separately.
 - **Trainable:** the waveform/question router and the shared head's self-attention, signal cross-attention, feed-forward layers and candidate scorer.
-- Metadata controls preprocessing. The head receives waveform vectors, text vectors and structural masks/positions. Output adapters preserve NormWear's 768 dimensions and append 256 zeros to Mantis's 512 dimensions.
+- One cleaned waveform per physical channel enters the router. Resampling and framing run only for the selected encoder. Metadata controls cleaning, compatibility checks and that formatting. The head receives waveform vectors, text vectors, relative times and padding masks. Output adapters preserve NormWear's 768 dimensions and append 256 zeros to Mantis's 512 dimensions.
 
 See [architecture and layer dimensions](docs/architecture-fix.md), [signal preparation](docs/preprocessing.md) and [training and W&B](docs/training.md).
 

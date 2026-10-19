@@ -32,23 +32,54 @@ def test_new_data_contract_and_split_isolation(tmp_path):
 
 def test_fp32_cache_reuses_only_matching_preparation_and_detects_corruption(model, tmp_path):
     cache = FeatureCache(tmp_path)
-    prepared = model.preprocessor.prepare(state())
+    prepared = model.preprocessor.clean(state())
     first = cache.get_or_encode(model, prepared, 1)
     count = model.encoders[1].calls
     second = cache.get_or_encode(model, prepared, 1)
     assert model.encoders[1].calls == count
     torch.testing.assert_close(first.values, second.values, atol=0, rtol=0)
+    torch.testing.assert_close(first.times, second.times, atol=0, rtol=0)
     changed = state(); changed["signals"][0]["samples"][0] += 0.1
-    cache.get_or_encode(model, model.preprocessor.prepare(changed), 1)
+    cache.get_or_encode(model, model.preprocessor.clean(changed), 1)
     assert model.encoders[1].calls == count+1
     path = next(tmp_path.glob("*.pt"))
     payload = torch.load(path, weights_only=True)
     payload["values"][0, 0] += 1
     torch.save(payload, path)
-    key = payload["binding"]["prepared"]
-    prepared_to_load = prepared if prepared.identity == key else model.preprocessor.prepare(changed)
+    key = payload["binding"]["cleaned"]
+    prepared_to_load = prepared if prepared.identity == key else model.preprocessor.clean(changed)
     with pytest.raises(ValueError, match="content changed"):
         cache.get_or_encode(model, prepared_to_load, 1)
+
+
+def test_feature_cache_hit_skips_formatting_and_remains_encoder_specific(model, tmp_path, monkeypatch):
+    cache = FeatureCache(tmp_path)
+    cleaned = model.preprocessor.clean(state())
+    calls = []
+    original = model.preprocessor.format_for_encoder
+    def format_signal(signal, expert):
+        calls.append(expert)
+        return original(signal, expert)
+    monkeypatch.setattr(model.preprocessor, "format_for_encoder", format_signal)
+    for expert in (0, 1, 0, 1):
+        cache.get_or_encode(model, cleaned, expert)
+    assert calls == [0, 1]
+    assert len(list(tmp_path.glob("*.pt"))) == 2
+    for path in tmp_path.glob("*.pt"):
+        payload = torch.load(path, weights_only=True)
+        assert payload["times"].shape == (len(payload["values"]),)
+        assert "positions" not in payload
+
+
+def test_checkpoint_rejects_a_different_text_and_position_contract(model, tmp_path):
+    path = tmp_path/"incompatible.pt"
+    save_checkpoint(path, model)
+    payload = torch.load(path, weights_only=True)
+    payload["identity"]["architecture"]["text_roles"].append("ending")
+    payload["identity"]["architecture"]["signal_position"] = "time-scale-cls"
+    torch.save(payload, path)
+    with pytest.raises(ValueError, match="two-encoder"):
+        load_checkpoint(path, model)
 
 
 def test_checkpoint_roundtrip_rejects_incompatible_head_and_preserves_output(model, tmp_path):

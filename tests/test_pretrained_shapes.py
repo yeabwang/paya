@@ -21,18 +21,25 @@ def test_all_three_real_frozen_encoders_and_both_signal_routes():
     report = {"purpose": "synthetic shape checks; untrained router/head; no performance evaluation",
               "preparation": model.preprocessor.identity(),
               "question": list(batch.question.shape), "criteria": list(batch.criteria.shape),
-              "ending": list(batch.ending.shape), "routes": {}}
+              "text_sequence_length": batch.criteria.shape[1]+1,
+              "role_embeddings": list(model.head.roles.shape), "routes": {}}
+    signals, owners, compatible = model.router_inputs(batch)
+    assert [list(signal.shape) for signal in signals] == [[3000]]
+    report["router_native_channels"] = [list(signal.shape) for signal in signals]
+    report["router_gate_input_width"] = model.router.gate[0].in_features
     with torch.no_grad():
         for expert, name in enumerate(("normwear", "mantis")):
-            view = batch.states[0].views[expert]
-            native = model.encoders[expert](view)
+            encoder_input = model.preprocessor.format_for_encoder(batch.states[0], expert)
+            native = model.encoders[expert](encoder_input)
             adapted = model.adapters[expert](native.values)
             result = model(batch, routes=torch.tensor([expert]))
             assert native.values.shape[-1] == (768, 512)[expert]
             assert adapted.shape[-1] == 768
+            assert native.times.shape == (len(native.values),)
             assert result["logits"].shape == (1, 3) and torch.isfinite(result["logits"]).all()
-            report["routes"][name] = {"prepared_frames": list(view.frames.shape),
+            report["routes"][name] = {"encoder_frames": list(encoder_input.frames.shape),
                 "native_vectors": list(native.values.shape), "head_signal": list(adapted.shape),
+                "relative_times": list(native.times.shape),
                 "router_logits": list(result["router_logits"].shape), "decision_logits": list(result["logits"].shape)}
     result = model.predict(state(), "Which category?", ["Slow", "Normal", "Fast"])
     assert list(result) == ["choice", "probabilities", "confidence"]

@@ -4,12 +4,13 @@ Paya uses a two-expert top-1 router and one shared decision head. NormWear, Mant
 
 ```mermaid
 flowchart TD
-    S[Signal + metadata] --> P[NeuroKit preparation]
+    S[Signal + metadata] --> P[Native-rate NeuroKit cleaning]
     P --> R[Trainable router]
     Q[Question] --> T[Frozen BioLORD]
-    C[Ordered choices + fixed ending] --> T
+    C[Ordered choices] --> T
     T -->|Question vector| R
-    R -->|One prepared view| E[Frozen NormWear or MantisV2]
+    R --> F[Format the selected encoder input]
+    F --> E[Frozen NormWear or MantisV2]
     E --> A[Fixed width adapter]
     A --> H[Trainable shared decision head]
     T -->|Separate text vectors| H
@@ -20,11 +21,11 @@ flowchart TD
     class R,H trainable;
 ```
 
-The public arguments are `state`, `question` and ordered `criteria`. The model supplies the ending `The answer is:` internally. Metadata determines units, native processing, framing and encoder compatibility before routing; neither learned component receives a metadata vector. Quality observations and dataset identifiers remain audit fields. See [preprocessing](preprocessing.md) and [training](training.md).
+The public arguments are `state`, `question` and ordered `criteria`. Metadata determines native cleaning and encoder eligibility. One cleaned waveform per physical channel reaches the router; resampling and framing run after selection. Neither learned component receives a metadata vector. Quality observations and dataset identifiers remain audit fields. See [preprocessing](preprocessing.md) and [training](training.md).
 
 ## Dimensions
 
-`B` is batch size; `K` is the maximum candidate count; `S = K+2` counts question, candidates and ending. `R_N` and `R_M` count real channel/frame pairs for each prepared view. `M` is the maximum encoded signal-token count per request. Padding masks identify real candidates and encoded tokens; padding never enters a frozen signal encoder.
+`B` is batch size; `K` is the maximum candidate count; `S = K+1` counts the question and candidates. `R_N` and `R_M` count real channel/frame pairs after formatting for the selected encoder. `M` is the maximum encoded signal-token count per request. Padding masks identify real candidates and encoded tokens; padding never enters a frozen signal encoder.
 
 ## Frozen encoders
 
@@ -59,51 +60,53 @@ Each block uses RMSNorm, rotary self-attention with eight heads of width 32 (`25
 
 ### BioLORD-2023
 
-Each question, choice and ending is independently tokenized and encoded. For `N` uncached strings and token length `L≤128`, MPNet maps `[N,L]` IDs/masks to `[N,L,768]`. Its 12 layers use 12 self-attention heads of width 64 and `768→3072→768` feed-forward layers. Masked mean pooling and L2 normalization return `[N,768]`; vectors are cached on CPU. Longer text is rejected rather than truncated.
+Each question and choice is independently tokenized and encoded. For `N` uncached strings and token length `L≤128`, MPNet maps `[N,L]` IDs/masks to `[N,L,768]`. Its 12 layers use 12 self-attention heads of width 64 and `768→3072→768` feed-forward layers. Masked mean pooling and L2 normalization return `[N,768]`; vectors are cached on CPU. Longer text is rejected rather than truncated.
 
 ## Trainable router
 
-Purpose: choose the compatible prepared encoder view using the waveform and question. Inference runs only the selected frozen signal encoder.
+Purpose: choose an eligible encoder from native-rate cleaned waveforms and the question. Each channel is a one-dimensional array `[N_c]`. Equal-length channels are batched as `[G,1,N]`; unequal lengths are processed separately without padding, resampling or framing.
 
 | Layer | Input | Output |
 | --- | --- | --- |
-| Shared Conv1d, kernel 9, stride 2, padding 4; GELU | NormWear `[R_N,1,390]`; Mantis `[R_M,1,512]` | `[R_N,16,195]`; `[R_M,16,256]` |
-| Shared Conv1d, kernel 5, stride 2, padding 2; GELU | Above | `[R_N,32,98]`; `[R_M,32,128]` |
-| Temporal mean | Each view's convolution outputs | `[R_j,32]` |
-| Mean real frames/channels per request | `[R_j,32]` and owner indices | `[B,32]` per view |
-| Concatenate both view summaries | Two `[B,32]` tensors | `[B,64]` |
+| Conv1d, kernel 9, stride 2, padding 4; GELU | `[G,1,N]` | `[G,16,ceil(N/2)]` |
+| Conv1d, kernel 5, stride 2, padding 2; GELU | Above | `[G,32,ceil(N/4)]` |
+| Temporal mean | `[G,32,ceil(N/4)]` | `[G,32]` |
+| Mean across physical channels belonging to each request | Per-channel 32-dimensional outputs and owner indices | `[B,32]` |
 | Question linear + GELU | `[B,768]` | `[B,128]` |
-| Concatenate waveform/question; linear + GELU | `[B,192]` | `[B,64]` |
-| Expert logits; compatibility mask; argmax | `[B,64]` | `[B,2]` logits; `[B]` route |
+| Concatenate waveform/question outputs | `[B,32]` and `[B,128]` | `[B,160]` |
+| Linear + GELU | `[B,160]` | `[B,64]` |
+| Expert logits; compatibility mask; argmax | `[B,64]` | `[B,2]` logits; `[B]` selected encoder |
 
-An unavailable view contributes zeros to its summary and its logit is masked to negative infinity. No handcrafted physical-summary features enter the router. Hard routing has no answer-loss gradient through argmax; training supplies detached expert-loss routing targets.
+`G` is the number of channels in a convolution batch and `N` is their native sample count. Convolution weights are shared across all channels. For one six-second ECG at 500 Hz, the convolution shapes are `[1,1,3000]→[1,16,1500]→[1,32,750]`, followed by temporal mean `[1,32]`.
+
+Compatibility is calculated from declared signal types, coverage and budgets, without constructing encoder inputs. Unavailable encoder logits are masked to negative infinity. After argmax, only the selected encoder's resampling and framing run, followed by that frozen encoder. Hard routing has no answer-loss gradient through argmax; training supplies detached expert-loss routing targets. Choices, quality measurements and metadata vectors are not CNN/MLP features.
 
 ## Trainable shared decision head
 
-Purpose: compare all choices against the encoded signal and question in one computation. Pack selected expert outputs as `[B,M,768]`. Default text-state width is 256 with four attention heads of width 64 and two residual blocks.
+Purpose: compare all choices against the encoded signal and question in one computation. Pack selected expert outputs as `[B,M,768]`. Default text-state width is 256 with four attention heads of width 64, two residual blocks and 2,829,825 trainable parameters.
 
 | Layer | Input | Output |
 | --- | --- | --- |
-| Stack separate question, candidates and ending | `[B,768]`, `[B,K,768]`, `[B,768]` | `[B,S,768]` |
+| Stack the separate question and candidates | `[B,768]`, `[B,K,768]` | `[B,S,768]` |
 | Shared text linear + LayerNorm | `[B,S,768]` | `[B,S,256]` |
-| Add question/candidate/ending role vectors | `[B,S,256]`, `[3,256]` | `[B,S,256]` |
+| Add question/candidate role vectors | `[B,S,256]`, `[2,256]` | `[B,S,256]` |
 | Pre-LayerNorm, bidirectional self-attention + residual | `[B,S,256]`; Q/K/V `[B,4,S,64]` | `[B,S,256]` |
 | Pre-LayerNorm and cross-attention query projection | `[B,S,256]` | Q `[B,4,S,64]` |
 | Signal key/value projections, 768→256 each | `[B,M,768]` | K/V `[B,4,M,64]` |
-| Add fixed sinusoidal time/scale/CLS positions to keys | `[B,M,3]` coordinates | `[B,M,256]` encoding, reshaped into K heads |
+| Add fixed sinusoidal relative-time encoding to keys | `[B,M]` relative times | `[B,M,256]` encoding, reshaped to `[B,4,M,64]` |
 | Cross-attention, output projection and residual | Q/K/V; attention scores `[B,4,S,M]` | `[B,S,256]` |
 | Pre-LayerNorm, linear, GELU, dropout, linear + residual | `[B,S,256]` | `[B,S,1024]→[B,S,256]` |
 | Repeat the residual block once | `[B,S,256]` | `[B,S,256]` |
 | Final LayerNorm and shared candidate linear scorer | Candidate states `[B,K,256]` | `[B,K,1]→[B,K]` logits |
 | Masked softmax of logits divided by fitted temperature | `[B,K]` | `[B,K]` probabilities |
 
-The default dropout is 0.1. Candidates share one role vector and scorer, with no candidate-position embeddings, preserving candidate permutation equivariance. Structural signal positions describe the prepared grid; they do not encode sensor labels. Each block costs `O(S²+S*M)` attention work rather than adding signal-token self-attention of `O(M²)`.
+The default dropout is 0.1. Candidates share one role vector and scorer, with no candidate-position embeddings, preserving candidate permutation equivariance. Each signal embedding carries one relative time in `[0,1]`, used only in the key positional encoding. No scale coordinate, CLS/frame indicator or sensor label is appended. Each block costs `O(S²+S*M)` attention work rather than adding signal-token self-attention of `O(M²)`.
 
 The returned choice is the highest-probability criterion; ties use the criterion text as a deterministic key. Probabilities retain the supplied order. Confidence equals the chosen probability. Calibration measures groups of predictions and does not guarantee an individual answer is correct.
 
 ## Identity and verification
 
-[paya/provenance.py](../paya/provenance.py) defines Paya `v1` contracts and pinned upstream identities. Prepared states, feature caches, checkpoints, calibration and exported bundles validate the relevant identity and checksums. Package metadata reads the same central version. Upstream model names and revisions are unchanged.
+[paya/provenance.py](../paya/provenance.py) defines Paya `v1` contracts and pinned upstream identities. Cleaned states, feature caches, checkpoints, calibration and exported bundles validate the relevant identity and checksums. Package metadata reads the same central version. Upstream model names and revisions are unchanged.
 
 Unit tests cover validation, native processing, routing, masks, permutations, gradients, caching, checkpoint/calibration bindings and training tracking. Integration tests exercise the actual pinned encoders and output shapes. Generalization, outcome calibration and latency must be measured after shared training, on independent domains and recordings.
 

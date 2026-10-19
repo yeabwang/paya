@@ -10,7 +10,7 @@ INPUT_SCHEMA_VERSION = int(VERSION[1:])
 RUNTIME_CONTRACT = f"paya-body-decision-{VERSION}"
 PREPARATION_CONTRACT = f"neurokit-native-physiology-{VERSION}"
 NATIVE_CONTRACT = f"wearable-native-cleaning-{VERSION}"
-CACHE_CONTRACT = f"two-encoder-fp32-fixed-adapter-{VERSION}"
+CACHE_CONTRACT = f"two-encoder-fp32-time-only-{VERSION}"
 TEXT_CONTRACT = f"biolord-separate-text-{VERSION}"
 
 NORMWEAR_ID = "mosaic-laboratory/normwear"
@@ -23,11 +23,13 @@ TEXT_REVISION = "167aab527b238a50ca65224e6319215d2ff4fc9f"
 TEXT_IDENTITY = {"contract": TEXT_CONTRACT, "model_id": TEXT_ID, "revision": TEXT_REVISION,
                  "pooling": "sentence-transformers-default", "normalize": True, "dimension": 768}
 
-ARCHITECTURE = {"router": f"waveform-conv16-conv32-question128-gate64-top1-{VERSION}",
+ARCHITECTURE = {"router": f"native-waveform-conv16-conv32-question128-concat160-gate64-top1-{VERSION}",
+                "pipeline": ["native_cleaning", "routing", "selected_encoder_formatting", "frozen_encoding", "decision_head"],
                 "signal_width": 768, "adapters": ["identity768", "right-zero-pad512-to768"],
                 "mantis_layer": 2, "mantis_output": "combined",
                 "text_processing": f"{TEXT_CONTRACT}-normalized-mean-128",
-                "ending": "The answer is:", "input_schema": INPUT_SCHEMA_VERSION,
+                "text_roles": ["question", "candidate"], "signal_position": "relative-time-sinusoidal",
+                "input_schema": INPUT_SCHEMA_VERSION,
                 "output": ["choice", "probabilities", "confidence"]}
 
 

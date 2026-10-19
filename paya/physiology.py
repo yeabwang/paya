@@ -62,7 +62,7 @@ def _observe(audit, name, operation):
 
 
 def clean_channel(channel):
-    """Return broad and dynamic waveforms with native-time quality observations."""
+    """Return one cleaned waveform and native-time physiological observations."""
     raw = channel.samples.astype(np.float64)
     rate, kind = channel.rate, channel.sensor_type
     audit = {"sensor_type": kind, "sampling_rate_hz": rate, "unit": channel.metadata["unit"],
@@ -77,22 +77,22 @@ def clean_channel(channel):
         values = _filter(values, rate, low=powerline+1, high=powerline-1, order=2)
         audit["powerline_hz"] = powerline
 
-    dynamic = None
+    detection = None
     if kind == "ecg":
         broad = _filter(values, rate, high=min(150, 0.4*rate))
         if rate > 2:
             # This is NeuroKit's ECG high-pass stage, without its implicit 50 Hz smoothing.
-            dynamic = _filter(values, rate, low=0.5, order=5)
+            detection = _filter(values, rate, low=0.5, order=5)
             audit["cleaning"] = "broad: DC-preserving low-pass <=150 Hz; detection: NeuroKit 0.5 Hz high-pass"
-            _observe(audit, "beats", lambda: _beats(audit, dynamic, rate, kind))
+            _observe(audit, "beats", lambda: _beats(audit, detection, rate, kind))
         else:
             audit["cleaning"] = "broad low-pass; native rate insufficient for ECG detection"
 
     elif kind == "ppg":
         broad = _filter(values, rate, high=min(40, 0.4*rate))
         if rate > 16:
-            dynamic = nk.ppg_clean(values, sampling_rate=rate, method="elgendi")
-            _observe(audit, "beats", lambda: _beats(audit, dynamic, rate, kind))
+            detection = nk.ppg_clean(values, sampling_rate=rate, method="elgendi")
+            _observe(audit, "beats", lambda: _beats(audit, detection, rate, kind))
         audit["cleaning"] = "broad: DC-preserving low-pass <=40 Hz; detection: Elgendi 0.5-8 Hz when native rate permits"
 
     elif kind == "eda":
@@ -100,9 +100,9 @@ def clean_channel(channel):
         audit["cleaning"] = "NeuroKit 3 Hz low-pass" if rate > 6 else "native <=6 Hz: no added low-pass"
         if rate > 0.125 and len(values) > 18 and not audit["flatline"]:
             components = nk.eda_phasic(broad, sampling_rate=rate, method="highpass", cutoff=0.05)
-            dynamic = components["EDA_Phasic"].to_numpy()
+            detection = components["EDA_Phasic"].to_numpy()
             def responses():
-                _, info = nk.eda_peaks(dynamic, sampling_rate=rate, method="neurokit", amplitude_min=0.1)
+                _, info = nk.eda_peaks(detection, sampling_rate=rate, method="neurokit", amplitude_min=0.1)
                 return {"method": "highpass-0.05Hz/neurokit", **_events(info, ["SCR_Onsets", "SCR_Peaks"], rate)}
             _observe(audit, "responses", responses)
 
@@ -110,9 +110,9 @@ def clean_channel(channel):
         broad = _filter(values, rate, high=min(3, 0.4*rate))
         audit["cleaning"] = "broad: DC-preserving low-pass <=3 Hz; detection: khodadad2018"
         if rate > 6:
-            dynamic = nk.rsp_clean(values, sampling_rate=rate, method="khodadad2018")
+            detection = nk.rsp_clean(values, sampling_rate=rate, method="khodadad2018")
             def breaths():
-                _, info = nk.rsp_peaks(dynamic, sampling_rate=rate, method="khodadad2018")
+                _, info = nk.rsp_peaks(detection, sampling_rate=rate, method="khodadad2018")
                 return {"method": "khodadad2018", **_events(info, ["RSP_Peaks", "RSP_Troughs"], rate)}
             _observe(audit, "breaths", breaths)
 
@@ -139,11 +139,9 @@ def clean_channel(channel):
         broad = nk.signal_smooth(np.pad(values, 1, mode="edge"), kernel="median", size=3)[1:-1]
         audit["cleaning"] = "three-observation median; absolute level and trend retained"
 
-    dynamic = broad if dynamic is None else dynamic
-    for waveform in (broad, dynamic):
-        if waveform.shape != raw.shape or not np.isfinite(waveform).all():
-            raise UnsupportedSignalError(f"Invalid {kind} waveform after native-rate cleaning")
-    return broad, dynamic, audit
+    if broad.shape != raw.shape or not np.isfinite(broad).all():
+        raise UnsupportedSignalError(f"Invalid {kind} waveform after native-rate cleaning")
+    return broad, audit
 
 
 def check_eeg_channels(channels, waveforms, audits):

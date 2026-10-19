@@ -7,7 +7,6 @@ from numbers import Real
 
 import numpy as np
 
-ENDING = "The answer is:"
 TYPES = ("ecg", "eeg", "accelerometer", "gyroscope", "ppg", "eda",
          "respiration", "temperature", "emg")
 
