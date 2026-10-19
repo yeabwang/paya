@@ -1,74 +1,65 @@
-"""Versioned runtime contracts, pinned encoder origins, and integrity fingerprints.
-
-Loading checks use explicit computation versions and encoder identities. Exact
-source hashes are retained for auditing and strict training resume, so ordinary
-formatting and docstring edits do not invalidate inference artifacts.
-"""
+"""Only the new two-encoder contract is loadable; there is no v1 migration path."""
 
 import hashlib
-import math
+import json
 from pathlib import Path
 
 NORMWEAR_ID = "mosaic-laboratory/normwear"
 NORMWEAR_REVISION = "c35a3d1ecda1cb971f1f89caaa3ee4b4c6ad8e84"
+MANTIS_ID = "paris-noah/MantisV2"
+MANTIS_REVISION = "8f6ca35cb54ab14b120618943c6fca5ddf5a76a6"
 TEXT_ID = "FremyCompany/BioLORD-2023"
 TEXT_REVISION = "167aab527b238a50ca65224e6319215d2ff4fc9f"
-RUNTIME_CONTRACT = "paya-choice-fp32-v1"
-EVIDENCE_CONTRACT = "sensor-time-scale-fp16-v1"
-PUBLIC_API = {"contract": RUNTIME_CONTRACT, "channel_order": "canonical-physical-v1"}
+RUNTIME_CONTRACT = "paya-body-decision-v2"
+ARCHITECTURE = {"router": "waveform-conv16-conv32-question128-gate64-top1-v2",
+                "signal_width": 768, "adapters": ["identity768", "right-zero-pad512-to768"],
+                "mantis_layer": 2, "mantis_output": "combined",
+                "text_processing": "biolord-separate-text-v2-normalized-mean-128",
+                "ending": "The answer is:", "input_schema": 2,
+                "output": ["choice", "probabilities", "confidence"]}
 
 
 def sha256(path):
-    """Return a file's SHA-256 fingerprint without loading it all into memory."""
     digest = hashlib.sha256()
-    with Path(path).open("rb") as stream:
-        for block in iter(lambda: stream.read(8 * 1024 * 1024), b""):
-            digest.update(block)
+    with Path(path).open("rb") as source:
+        for chunk in iter(lambda: source.read(8*1024*1024), b""):
+            digest.update(chunk)
     return digest.hexdigest()
 
 
-def source_sha256(path):
-    """Hash UTF-8 source after normalizing Windows and Unix line endings."""
-    return hashlib.sha256(
-        Path(path).read_text(encoding="utf-8").encode("utf-8")
-    ).hexdigest()
+def fingerprint(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def identity(asset_dir):
-    """Describe the runtime, physical input schema, and pinned encoder snapshot.
-
-    The head configuration is stored separately in each checkpoint and its
-    tensors are loaded strictly. Bump the runtime contract for a computation
-    change; formatting changes belong only in source provenance.
-    """
-    from .inputs import SCHEMA_VERSION
-    from .text import IDENTITY
-
-    return {
-        "schema": 2,
-        "runtime_contract": RUNTIME_CONTRACT,
-        "input_schema": SCHEMA_VERSION,
-        "text": IDENTITY,
-        "signal_source": sha256(Path(asset_dir) / "source.json"),
-    }
+def contained_file(root, name):
+    root = Path(root).resolve()
+    path = (root / name).resolve()
+    if not path.is_relative_to(root) or not path.is_file():
+        raise ValueError("Missing asset or path outside its declared directory")
+    return path
 
 
-def validate_calibration(binding, checkpoint_sha256):
-    """Require a calibrator bound to these weights and the supported waveform API."""
-    if binding.get("checkpoint_sha256") != checkpoint_sha256:
-        raise ValueError("Calibration belongs to different weights")
-    if binding.get("public_api") != PUBLIC_API:
-        raise ValueError("Calibration belongs to a different public input computation")
-    temperature = float(binding["temperature"])
-    if not math.isfinite(temperature) or temperature <= 0:
-        raise ValueError("Calibration temperature must be finite and positive")
-    return temperature
+def verify_source(directory, model_id, revision):
+    root = Path(directory)
+    source = json.loads((root / "source.json").read_text(encoding="utf-8"))
+    if source.get("model_id") != model_id or source.get("revision") != revision:
+        raise ValueError(f"Expected pinned {model_id}@{revision}")
+    files = source.get("files")
+    if isinstance(files, list):
+        files = {entry["file"]: entry["sha256"] for entry in files}
+    if not isinstance(files, dict) or not files:
+        raise ValueError("Asset source needs nonempty file checksums")
+    for name, digest in files.items():
+        if sha256(contained_file(root, name)) != digest:
+            raise ValueError(f"Asset checksum changed: {name}")
+    if "model.safetensors" not in files:
+        raise ValueError("Pinned safetensors weights are required")
+    return {"model_id": model_id, "revision": revision, "files": files}
 
 
-def source_provenance():
-    """Record current package source fingerprints for audit, without gating loads."""
-    root = Path(__file__).parent
-    return {
-        p.relative_to(root).as_posix(): source_sha256(p)
-        for p in sorted(root.rglob("*.py"))
-    }
+def verify_assets(assets):
+    expected = {"normwear": (NORMWEAR_ID, NORMWEAR_REVISION),
+                "mantis": (MANTIS_ID, MANTIS_REVISION), "text": (TEXT_ID, TEXT_REVISION)}
+    if set(assets) != set(expected):
+        raise ValueError("Specify exactly normwear, mantis, and text asset directories")
+    return {name: verify_source(assets[name], *spec) for name, spec in expected.items()}

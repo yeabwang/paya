@@ -1,120 +1,135 @@
-"""Validate physical signal requests and encode canonical sensor metadata."""
+"""The state/question/criteria public contract. No metadata feature encoding."""
 
+from collections.abc import Mapping
+from dataclasses import dataclass
 import math
+from numbers import Real
 
 import numpy as np
-import torch
 
 ENDING = "The answer is:"
-SCHEMA_VERSION = 1
-TYPES = (
-    "unknown",
-    "ecg",
-    "eeg",
-    "accelerometer",
-    "gyroscope",
-    "ppg",
-    "eda",
-    "respiration",
-    "temperature",
-    "emg",
-)
-AXES = ("unknown", "x", "y", "z")
-PLACEMENTS = ("unknown", "chest", "wrist", "head", "waist", "ankle")
-LEADS = ("unknown", "mlii", "i", "ii", "iii", "v1", "v2", "v3", "v4", "v5", "v6")
-UNITS = ("unknown", "mv", "uv", "g", "rad/s", "us", "c", "standardized", "normalized")
-METADATA_DIM = sum(map(len, (TYPES, AXES, PLACEMENTS, LEADS, UNITS))) + 2
-# Unit conversion preserves information; no source-selected normalization/resampling.
-CONVERSIONS = {
-    "v": ("mv", 1000.0),
-    "mv": ("mv", 1.0),
-    "uv": ("mv", 0.001),
-    "g": ("g", 1.0),
-    "m/s2": ("g", 1 / 9.80665),
-    "rad/s": ("rad/s", 1.0),
-    "deg/s": ("rad/s", math.pi / 180),
-}
+SCHEMA_VERSION = 2
+TYPES = ("ecg", "eeg", "accelerometer", "gyroscope", "ppg", "eda",
+         "respiration", "temperature", "emg")
 
 
-def physical_metadata(channel, rate, length):
-    """Encode documented sensor fields, log sample rate, and log duration.
-
-    Return a float32 vector of length METADATA_DIM. Unrecognized categories use
-    the explicit unknown slot; category ordering is part of the model contract.
-    """
-    fields = (
-        ("sensor_type", TYPES),
-        ("axis", AXES),
-        ("placement", PLACEMENTS),
-        ("lead", LEADS),
-        ("unit", UNITS),
-    )
-    values = []
-    for name, vocabulary in fields:
-        value = str(channel.get(name, "unknown")).lower()
-        value = value if value in vocabulary else "unknown"
-        values.extend(float(value == token) for token in vocabulary)
-    values.extend((math.log(rate / 65), math.log(length / rate)))
-    return torch.tensor(values, dtype=torch.float32)
+class UnsupportedSignalError(ValueError):
+    """Valid measurements cannot satisfy a supported preparation contract."""
 
 
-def prepare_signal(signal):
-    """Validate a signal mapping and return waveform and metadata tensors.
-
-    The mapping contains sampling_rate_hz and channels with one-dimensional
-    samples plus optional physical descriptors. Channels must share length and
-    rate. Known units are converted without resampling or normalization.
-
-    Returns float32 tensors shaped [channels, samples] and
-    [channels, METADATA_DIM]. Raises ValueError for unsupported dimensions,
-    nonfinite values, invalid rates, or inconsistent channel lengths.
-    """
-    rate = float(signal["sampling_rate_hz"])
-    if not math.isfinite(rate) or not 1 <= rate <= 4000:
-        raise ValueError("sampling_rate_hz must be finite and between 1 and 4000")
-    channels = signal.get("channels", [])
-    if not channels or len(channels) > 64:
-        raise ValueError("Supply 1Ã¢â‚¬â€œ64 physical channels")
-    arrays, metadata, length = [], [], None
-    for channel in channels:
-        x = np.asarray(channel["samples"], dtype=np.float32)
-        if x.ndim != 1 or not 10 <= len(x) <= 120000:
-            raise ValueError(
-                "Each channel needs a one-dimensional window of 10Ã¢â‚¬â€œ120000 samples"
-            )
-        if not np.isfinite(x).all():
-            raise ValueError(
-                "Signal measurements must be finite; missing channels must be omitted"
-            )
-        if length is not None and len(x) != length:
-            raise ValueError(
-                "Channels must share rate and length; align physical streams before inference"
-            )
-        length = len(x)
-        unit = (
-            str(channel.get("unit", "unknown"))
-            .lower()
-            .replace("Ã‚Âµ", "u")
-            .replace("ÃŽÂ¼", "u")
-        )
-        normalized = {**channel, "unit": unit}
-        if unit in CONVERSIONS:
-            normalized["unit"], scale = CONVERSIONS[unit]
-            x = x * scale
-        if not np.isfinite(x).all():
-            raise ValueError("Unit conversion produced nonfinite values")
-        arrays.append(torch.from_numpy(x.copy()))
-        metadata.append(physical_metadata(normalized, rate, length))
-    return torch.stack(arrays), torch.stack(metadata)
+@dataclass(frozen=True)
+class Channel:
+    samples: np.ndarray
+    sensor_type: str
+    rate: float
+    start: float
+    metadata: dict
 
 
-def validate_question(question, choices):
-    """Require a nonempty question and 2–64 distinct, nonempty choice descriptions."""
+def positive_number(value, name):
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real):
+        raise ValueError(f"{name} must be a real number, not a string or boolean")
+    value = float(value)
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be finite and positive")
+    return value
+
+
+def validate_text(question, criteria):
     if not isinstance(question, str) or not question.strip():
-        raise ValueError("Supply a nonempty question")
-    if not isinstance(choices, list) or not 2 <= len(choices) <= 64:
-        raise ValueError("Supply 2Ã¢â‚¬â€œ64 choice descriptions")
-    if any(not isinstance(c, str) or not c.strip() for c in choices) or len(
-        set(choices)
-    ) != len(choices):
-        raise ValueError("Choice descriptions must be nonempty and distinct")
+        raise ValueError("question must be a nonempty string")
+    if not isinstance(criteria, list) or not 2 <= len(criteria) <= 64:
+        raise ValueError("criteria must be an ordered list of 2–64 strings")
+    if any(not isinstance(c, str) or not c.strip() for c in criteria):
+        raise ValueError("criteria entries must be nonempty strings")
+    if len({c.strip() for c in criteria}) != len(criteria):
+        raise ValueError("criteria entries must be distinct")
+
+
+def canonical_unit(samples, kind, unit):
+    if not isinstance(unit, str) or not unit.strip():
+        raise ValueError("metadata.unit must specify the measurement convention")
+    unit = unit.strip().lower().replace("µ", "u").replace("μ", "u")
+    electrical = {"v": 1.0, "mv": 1e-3, "uv": 1e-6}
+    if kind in ("ecg", "eeg", "emg") and unit in electrical:
+        target = "mv" if kind == "ecg" else "uv"
+        return samples * electrical[unit] / electrical[target], target
+    conversions = {
+        "accelerometer": {"g": (9.80665, 0, "m/s2"), "m/s2": (1, 0, "m/s2"),
+                          "m/s²": (1, 0, "m/s2")},
+        "gyroscope": {"rad/s": (1, 0, "rad/s"), "deg/s": (math.pi/180, 0, "rad/s")},
+        "eda": {"us": (1, 0, "us"), "ms": (1000, 0, "us"), "s": (1e6, 0, "us")},
+        "temperature": {"c": (1, 0, "c"), "°c": (1, 0, "c"),
+                        "f": (5/9, -32*5/9, "c"), "°f": (5/9, -32*5/9, "c"),
+                        "k": (1, -273.15, "c")},
+        "ppg": {u: (1, 0, u) for u in ("au", "counts", "normalized")},
+        "respiration": {**{u: (1, 0, u) for u in ("au", "normalized", "l")},
+                        "ml": (0.001, 0, "l")},
+    }
+    if unit not in conversions.get(kind, {}):
+        raise ValueError(f"Unsupported unit {unit!r} for {kind}; physical units cannot be guessed")
+    scale, offset, target = conversions[kind][unit]
+    return samples * scale + offset, target
+
+
+def validate_state(state, max_channels=64, max_samples=1_000_000):
+    if not isinstance(state, Mapping) or not isinstance(state.get("signals"), list):
+        raise ValueError("state must contain a signals list")
+    if not 1 <= len(state["signals"]) <= max_channels:
+        raise ValueError(f"Supply 1–{max_channels} physical channels")
+    channels, explicit_starts = [], []
+    for entry in state["signals"]:
+        if not isinstance(entry, Mapping) or not isinstance(entry.get("metadata"), Mapping):
+            raise ValueError("Each signal needs samples and a metadata object")
+        meta = dict(entry["metadata"])
+        kind = meta.get("sensor_type")
+        if not isinstance(kind, str) or kind.strip().lower() not in TYPES:
+            raise ValueError(f"metadata.sensor_type must be one of {TYPES}")
+        kind = kind.strip().lower()
+        rate = positive_number(meta.get("sampling_rate_hz"), "metadata.sampling_rate_hz")
+        raw = np.asarray(entry.get("samples"))
+        if raw.ndim != 1 or raw.dtype.kind not in "iuf" or not 2 <= raw.size <= max_samples:
+            raise ValueError(f"samples must contain 2–{max_samples} real numeric measurements")
+        values = raw.astype(np.float64)
+        if not np.isfinite(values).all():
+            raise ValueError("Samples must be finite; missing intervals cannot be filled silently")
+        values, unit = canonical_unit(values, kind, meta.get("unit"))
+        with np.errstate(over="ignore", invalid="ignore"):
+            values = values.astype(np.float32)
+        if not np.isfinite(values).all():
+            raise ValueError("Unit conversion overflowed the waveform representation")
+        start = meta.get("start_time_s", 0.0)
+        if isinstance(start, (bool, np.bool_)) or not isinstance(start, Real) or not math.isfinite(start):
+            raise ValueError("metadata.start_time_s must be finite")
+        if "duration_s" in meta:
+            duration = positive_number(meta["duration_s"], "metadata.duration_s")
+            if not math.isclose(duration, len(values)/rate, rel_tol=0, abs_tol=max(1e-9, 0.5/rate)):
+                raise ValueError("metadata.duration_s disagrees with samples and sampling rate")
+        explicit_starts.append("start_time_s" in meta)
+        if "timestamps_s" in meta:
+            ts = np.asarray(meta["timestamps_s"], dtype=np.float64)
+            if ts.shape != values.shape or not np.isfinite(ts).all():
+                raise ValueError("Timestamps must be finite and match samples")
+            if not np.allclose(np.diff(ts), 1/rate, rtol=0.01, atol=1e-9):
+                raise ValueError("Timestamps disagree with the declared uniform sampling rate")
+            if not math.isclose(ts[0], start, rel_tol=0, abs_tol=max(1e-9, 0.01/rate)):
+                raise ValueError("Timestamps disagree with start_time_s")
+        for field in ("axis", "lead", "placement"):
+            if field in meta and (not isinstance(meta[field], str) or not meta[field].strip()):
+                raise ValueError(f"metadata.{field} must be a nonempty string when supplied")
+        if meta.get("axis", "x").lower() not in ("x", "y", "z"):
+            raise ValueError("Inertial axis must be x, y, or z")
+        meta.update(sensor_type=kind, sampling_rate_hz=rate, unit=unit)
+        channels.append(Channel(values, kind, rate, float(start), meta))
+    if len({c.rate for c in channels}) > 1 and not all(explicit_starts):
+        raise ValueError("Heterogeneous rates require start_time_s on every channel")
+    first = channels[0]
+    for c in channels[1:]:
+        sample_interval = min(1/first.rate, 1/c.rate)
+        if (abs(c.start-first.start) > max(1e-9, 0.01*sample_interval)
+                or abs(len(c.samples)/c.rate-len(first.samples)/first.rate) > max(1e-9, 0.5*sample_interval)):
+            raise ValueError("Channels must describe the same measured interval")
+    # Stable physical ordering must not become a learned channel-ID embedding.
+    return sorted(channels, key=lambda c: (c.sensor_type, str(c.metadata.get("lead", "")),
+                  str(c.metadata.get("placement", "")), str(c.metadata.get("axis", "")),
+                  c.samples.tobytes()))

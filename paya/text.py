@@ -10,6 +10,7 @@ import torch
 from .provenance import TEXT_ID, TEXT_REVISION, sha256
 
 IDENTITY = {
+    "contract": "biolord-separate-text-v2",
     "model_id": TEXT_ID,
     "revision": TEXT_REVISION,
     "pooling": "sentence-transformers-default",
@@ -46,6 +47,8 @@ class TextEncoder:
         the tokenizer context instead of silently truncating it. Return CPU vectors
         even when the underlying text encoder runs on a GPU.
         """
+        if not isinstance(strings, list) or not strings or any(not isinstance(s, str) or not s.strip() for s in strings):
+            raise ValueError("Encode a nonempty list of separate, nonempty text strings")
         missing = list(dict.fromkeys(s for s in strings if s not in self.embeddings))
         if missing:
             if self.model is None:
@@ -116,7 +119,7 @@ def main():
     """Build or extend a text cache from a JSON list of strings."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--texts", type=Path, required=True)
-    parser.add_argument("--output", type=Path, default=Path("cache/paya-text.pt"))
+    parser.add_argument("--output", type=Path, default=Path("cache/body-v2-text.pt"))
     parser.add_argument("--device", default="cpu")
     args = parser.parse_args()
     encoder = TextEncoder(args.output, args.device)

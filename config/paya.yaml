@@ -1,24 +1,35 @@
 seed: 42
-threads: 6
-assets: third-party/normwear
+threads: 4
+assets:
+  normwear: third-party/normwear
+  mantis: third-party/mantis
+  text: third-party/biolord
+preparation:
+  max_channels: 64
+  max_samples: 1000000
+  max_normwear_channels: 4
+  max_mantis_frames: 128
+  max_signal_tokens: 1024
+  time_bins: 8
+  filter_order: 4
 head:
   width: 256
   layers: 2
   heads: 4
   dropout: 0.1
-  memory_time_bins: 8
 data:
-  root: data/body-signals-v1
-  text_cache: cache/paya-text.pt
-  feature_cache: cache/paya-evidence.json
-  batch_size: 32
-  exclude: []
+  train: data/body-decisions-v2/train.jsonl
+  selection: data/body-decisions-v2/selection.jsonl
+  calibration: data/body-decisions-v2/calibration.jsonl
+  test: data/body-decisions-v2/test.jsonl
+feature_cache: cache/body-decisions-v2
+batch_size: 8
 optim:
-  epochs: 20
-  patience: 5
+  epochs: 16
+  warmup_epochs: 2
   lr: 0.0003
   weight_decay: 0.01
-  label_smoothing: 0.0
-wandb:
-  mode: disabled
-  project: paya
+  router_loss_weight: 1.0
+  route_temperature: 1.0
+  cost_weight: 0.0
+  expert_costs: [1.0, 1.0]

@@ -1,293 +1,161 @@
-"""Frozen signal encoding and the shared trainable candidate-scoring head."""
+"""Preprocess -> two-expert router -> one frozen encoder -> one shared head."""
 
-import json
-import math
+from dataclasses import dataclass
 from pathlib import Path
 
 import torch
-from safetensors.torch import load_file
 from torch import nn
-from torch.nn import functional as F
 
-from .inputs import METADATA_DIM
-from .provenance import NORMWEAR_ID, NORMWEAR_REVISION, sha256
-from .vendor.normwear import NormWear
+from .encoders import EncodedSignal, FixedWidthAdapter, NormWearEncoder, MantisEncoder
+from .head import DecisionHead
+from .inputs import ENDING, validate_text
+from .preprocessing import SignalPreprocessor, PreparationConfig, PreparedState
+from .provenance import RUNTIME_CONTRACT, ARCHITECTURE, verify_assets
+from .router import ExpertRouter
+from .text import TextEncoder
 
 
-class EvidenceAttention(nn.Module):
-    """Cosine cross-attention with a bounded learned logit scale."""
+@dataclass
+class DecisionBatch:
+    states: list[PreparedState]
+    question: torch.Tensor
+    criteria: torch.Tensor
+    ending: torch.Tensor
+    criteria_mask: torch.Tensor
+    descriptions: list[list[str]]
 
-    def __init__(self, width, heads=4):
+    def to(self, device):
+        return DecisionBatch([s.to(device) for s in self.states], self.question.to(device),
+                             self.criteria.to(device), self.ending.to(device),
+                             self.criteria_mask.to(device), self.descriptions)
+
+
+class PayaModel(nn.Module):
+    def __init__(self, normwear, mantis, text_encoder, preparation=None, head=None, asset_identity=None):
         super().__init__()
-        if width % heads:
-            raise ValueError("Fusion width must be divisible by attention heads")
-        self.heads = heads
-        self.q, self.k, self.v, self.out = [nn.Linear(width, width) for _ in range(4)]
-        self.log_scale = nn.Parameter(torch.tensor(math.log(5.0)))
-
-    def forward(self, query, memory, valid=None):
-        """Attend from [batch, queries, width] to [batch, memory, width].
-
-        valid optionally masks memory positions. Return the original query shape;
-        reject examples with no valid memory token.
-        """
-
-        def split(x):
-            return x.reshape(x.shape[0], x.shape[1], self.heads, -1).transpose(1, 2)
-
-        q, k = (
-            F.normalize(split(self.q(query)), dim=-1),
-            F.normalize(split(self.k(memory)), dim=-1),
-        )
-        scores = (q @ k.transpose(-2, -1)) * self.log_scale.clamp(
-            max=math.log(20)
-        ).exp()
-        if valid is not None:
-            if not valid.any(-1).all():
-                raise ValueError("Attention needs at least one valid evidence token")
-            scores = scores.masked_fill(~valid[:, None, None, :], -torch.inf)
-        out = scores.softmax(-1) @ split(self.v(memory))
-        return self.out(out.transpose(1, 2).reshape(query.shape))
-
-
-class GroundedChoiceHead(nn.Module):
-    """Score variable answer sets against shared signal, sensor, and text evidence."""
-
-    def __init__(
-        self,
-        signal_hidden=768,
-        text_hidden=768,
-        width=256,
-        layers=2,
-        heads=4,
-        dropout=0.1,
-    ):
-        super().__init__()
-        self.signal_proj = nn.Sequential(
-            nn.LayerNorm(signal_hidden), nn.Linear(signal_hidden, width)
-        )
-        self.sensor_proj = nn.Sequential(
-            nn.Linear(METADATA_DIM, width), nn.GELU(), nn.Linear(width, width)
-        )
-        # Relative time and scale describe evidence positions, never channel rank.
-        self.position_proj = nn.Linear(3, width, bias=False)
-        self.text_proj = nn.Sequential(
-            nn.LayerNorm(text_hidden), nn.Linear(text_hidden, width)
-        )
-        self.roles = nn.Parameter(torch.zeros(2, width))
-        self.context = nn.ModuleList(
-            [EvidenceAttention(width, heads) for _ in range(layers)]
-        )
-        self.norms = nn.ModuleList([nn.LayerNorm(width) for _ in range(layers)])
-        self.ff = nn.ModuleList(
-            [
-                nn.Sequential(
-                    nn.LayerNorm(width),
-                    nn.Linear(width, width * 2),
-                    nn.GELU(),
-                    nn.Linear(width * 2, width),
-                )
-                for _ in range(layers)
-            ]
-        )
-        self.comparison, self.sensor_attention = (
-            EvidenceAttention(width, heads),
-            EvidenceAttention(width, heads),
-        )
-        self.final_norm = nn.LayerNorm(width)
-        self.answer_proj, self.choice_proj = (
-            nn.Linear(width, width),
-            nn.Linear(width, width),
-        )
-        self.evidence_score = nn.Sequential(
-            nn.Linear(width * 4, width), nn.GELU(), nn.Linear(width, 1)
-        )
-        self.logit_scale = nn.Parameter(torch.tensor(math.log(5.0)))
-        self.drop = nn.Dropout(dropout)
-
-    @staticmethod
-    def signal_memory(patches, time_bins=8):
-        """Pool time while preserving CLS and the 13-scale patch grid.
-
-        Convert [batch, sensors, patches, hidden] to
-        [batch, sensors, 1 + min(time_bins, time_patches) * 13, hidden].
-        The scale ordering and adaptive pooling are part of the cache contract.
-        """
-        batch, sensors, count, hidden = patches.shape
-        if count < 2 or (count - 1) % 13:
-            raise ValueError("Expected CLS and a 13-scale signal patch grid")
-        grid = (
-            patches[:, :, 1:]
-            .reshape(batch * sensors, -1, 13, hidden)
-            .permute(0, 3, 1, 2)
-        )
-        bins = min(time_bins, grid.shape[2])
-        content = F.adaptive_avg_pool2d(grid, (bins, 13)).permute(0, 2, 3, 1)
-        content = content.reshape(batch, sensors, bins * 13, hidden)
-        return torch.cat([patches[:, :, :1], content], dim=2)
-
-    def forward(
-        self,
-        memory,
-        sensor_metadata,
-        sensor_mask,
-        question,
-        choices,
-        ending,
-        choice_mask,
-    ):
-        """Return [batch, choices] scores from sensor/time/scale evidence.
-
-        memory is [batch, sensors, tokens, hidden]; sensor metadata is
-        [batch, sensors, METADATA_DIM]. question and ending are [batch, 768],
-        choices is [batch, choices, 768]. Boolean masks mark real sensors and
-        candidates. Padded candidates receive negative-infinity scores.
-        """
-        batch, sensors, tokens, hidden = memory.shape
-        if (
-            (tokens - 1) % 13
-            or not sensor_mask.any(-1).all()
-            or not choice_mask.any(-1).all()
-        ):
-            raise ValueError("Invalid evidence grid, sensors or candidates")
-        bins = (tokens - 1) // 13
-        positions = memory.new_zeros(tokens, 3)
-        positions[0, 2] = 1
-        positions[1:, 0] = torch.linspace(
-            0, 1, bins, device=memory.device
-        ).repeat_interleave(13)
-        positions[1:, 1] = torch.linspace(0, 1, 13, device=memory.device).repeat(bins)
-        projected = (
-            self.signal_proj(memory.float())
-            + self.sensor_proj(sensor_metadata)[:, :, None]
-        )
-        projected = projected + self.position_proj(positions)[None, None]
-        sensor_vectors = projected.mean(2)
-        valid = sensor_mask[:, :, None].expand(-1, -1, tokens).flatten(1, 2)
-        evidence_memory = self.drop(projected.flatten(1, 2))
-        q, c, e = (
-            self.text_proj(question),
-            self.text_proj(choices),
-            self.text_proj(ending),
-        )
-        queries = torch.cat(
-            [(q + e + self.roles[0])[:, None], c + q[:, None] + self.roles[1]], dim=1
-        )
-        for attention, norm, ff in zip(self.context, self.norms, self.ff):
-            queries = queries + self.drop(
-                attention(norm(queries), evidence_memory, valid)
-            )
-            queries = queries + self.drop(ff(queries))
-        query_valid = torch.cat(
-            [torch.ones_like(choice_mask[:, :1]), choice_mask], dim=1
-        )
-        queries = self.final_norm(
-            queries
-            + self.comparison(
-                self.final_norm(queries), self.final_norm(queries), query_valid
-            )
-        )
-        evidence = self.sensor_attention(c + q[:, None], sensor_vectors, sensor_mask)
-        direct = self.evidence_score(
-            self.drop(torch.cat([evidence, c, evidence * c, evidence * q[:, None]], -1))
-        ).squeeze(-1)
-        answer = F.normalize(self.answer_proj(queries[:, :1]), dim=-1)
-        candidates = F.normalize(self.choice_proj(queries[:, 1:]), dim=-1)
-        similarity = (answer * candidates).sum(-1) * self.logit_scale.clamp(
-            max=math.log(20)
-        ).exp()
-        return (similarity + direct).masked_fill(~choice_mask, -torch.inf)
-
-
-class SignalDecision(nn.Module):
-    """Combine a frozen NormWear encoder with a shared choice head and temperature."""
-
-    def __init__(
-        self, core, width=256, layers=2, heads=4, dropout=0.1, memory_time_bins=8
-    ):
-        super().__init__()
-        self.core = core.requires_grad_(False)
-        self.head = GroundedChoiceHead(
-            core.embed_dim, width=width, layers=layers, heads=heads, dropout=dropout
-        )
-        self.memory_time_bins = memory_time_bins
+        self.encoders = nn.ModuleList((normwear, mantis)).requires_grad_(False)
+        self.adapters = nn.ModuleList((FixedWidthAdapter(768), FixedWidthAdapter(512)))
+        self.router = ExpertRouter()
+        self.head = DecisionHead(**(head or {}))
+        self.text_encoder = text_encoder
+        self.preprocessor = SignalPreprocessor(preparation)
+        self.asset_identity = asset_identity or {"injected_test_encoders": True}
         self.register_buffer("temperature", torch.tensor(1.0))
+        self.calibration = None
+        self.train(False)
+
+    @classmethod
+    def from_assets(cls, assets, preparation=None, head=None, device="cpu"):
+        sources = verify_assets(assets)
+        settings = PreparationConfig(**(preparation or {}))
+        text = TextEncoder(device=device, model_path=Path(assets["text"]))
+        model = cls(NormWearEncoder.load(assets["normwear"], settings.time_bins),
+                    MantisEncoder.load(assets["mantis"]), text, settings, head, sources)
+        return model.to(device)
+
+    @property
+    def device(self):
+        return self.temperature.device
+
+    def identity(self):
+        return {"contract": RUNTIME_CONTRACT, "architecture": ARCHITECTURE,
+                "assets": self.asset_identity, "preparation": self.preprocessor.identity(),
+                "head": self.head.config}
 
     def train(self, mode=True):
-        """Set head training mode while keeping the frozen encoder in evaluation mode."""
         super().train(mode)
-        self.core.eval()
+        self.encoders.eval()
+        if mode and hasattr(self, "temperature"):
+            self.temperature.fill_(1.0)
+            self.calibration = None
+        if getattr(self, "text_encoder", None) is not None and self.text_encoder.model is not None:
+            self.text_encoder.model.eval().requires_grad_(False)
         return self
 
-    def forward(
-        self,
-        question,
-        choices,
-        ending,
-        choice_mask,
-        sensor_metadata,
-        sensor_mask,
-        signals=None,
-        signal_memory=None,
-    ):
-        """Score a batch from either raw signals or frozen signal memory.
+    def trainable_parameters(self):
+        return (p for module in (self.router, self.head) for p in module.parameters())
 
-        Supply exactly one of signals [batch, sensors, samples] and signal_memory
-        [batch, sensors, tokens, 768]. Return masked choice logits divided by the
-        model temperature. Raw batches contain only real channels; the encoder
-        runs without gradients while the head remains differentiable.
-        """
-        if (signals is None) == (signal_memory is None):
-            raise ValueError("Supply exactly one waveform or frozen evidence input")
-        if signal_memory is None:
-            if not sensor_mask.all():
-                raise ValueError(
-                    "Raw batches must contain real channels only; group by channel count"
-                )
-            if not torch.isfinite(signals).all():
-                raise ValueError("Waveforms must be finite")
-            with torch.no_grad():
-                signal_memory = self.head.signal_memory(
-                    self.core(signals), self.memory_time_bins
-                )
-        if (
-            not torch.isfinite(signal_memory).all()
-            or not torch.isfinite(sensor_metadata).all()
-        ):
-            raise ValueError("Evidence and physical metadata must be finite")
-        with torch.autocast(device_type=question.device.type, enabled=False):
-            logits = self.head(
-                signal_memory.float(),
-                sensor_metadata.float(),
-                sensor_mask,
-                question.float(),
-                choices.float(),
-                ending.float(),
-                choice_mask,
-            )
-        return logits / self.temperature.clamp_min(0.05)
+    def make_batch(self, states, questions, criteria):
+        if not states or len(states) != len(questions) or len(states) != len(criteria):
+            raise ValueError("Supply matching nonempty state/question/criteria batches")
+        for q, c in zip(questions, criteria):
+            validate_text(q, c)
+        prepared = [s if isinstance(s, PreparedState) else self.preprocessor.prepare(s) for s in states]
+        strings = [s for q, c in zip(questions, criteria) for s in [q, *c]] + [ENDING]
+        vectors = self.text_encoder.encode(strings).to(self.device).detach().clone()
+        if vectors.shape != (len(strings), 768) or not torch.isfinite(vectors).all():
+            raise ValueError("BioLORD must return finite, separate 768-dimensional vectors")
+        width, offset = max(map(len, criteria)), 0
+        qs, cs = [], vectors.new_zeros(len(states), width, 768)
+        mask = torch.zeros(len(states), width, dtype=torch.bool, device=self.device)
+        for i, choices in enumerate(criteria):
+            qs.append(vectors[offset])
+            cs[i, :len(choices)] = vectors[offset+1:offset+1+len(choices)]
+            mask[i, :len(choices)] = True
+            offset += 1 + len(choices)
+        return DecisionBatch(prepared, torch.stack(qs), cs, vectors[-1:].expand(len(states), -1),
+                             mask, [list(c) for c in criteria]).to(self.device)
 
+    @staticmethod
+    def router_inputs(batch):
+        frames, owners = [], []
+        compatible = torch.stack([s.compatible for s in batch.states]).to(batch.question.device)
+        for expert, length in enumerate((390, 512)):
+            pairs = [(i, s.views[expert]) for i, s in enumerate(batch.states) if s.views[expert] is not None]
+            frames.append(torch.cat([view.frames for _, view in pairs]) if pairs else batch.question.new_empty(0, 1, length))
+            owners.append(torch.cat([torch.full((len(view.frames),), i, device=batch.question.device, dtype=torch.long)
+                                     for i, view in pairs]) if pairs else torch.empty(0, device=batch.question.device, dtype=torch.long))
+        return tuple(frames), tuple(owners), compatible
 
-def build_model(asset_dir, config):
-    """Verify pinned encoder files, load their tensors strictly, and build the head.
+    def encode(self, prepared, expert):
+        view = prepared.views[expert]
+        if view is None:
+            raise ValueError("Cannot encode an unavailable preparation")
+        with torch.no_grad():
+            encoded = self.encoders[expert](view.to(self.device))
+        expected_width = (768, 512)[expert]
+        if encoded.values.ndim != 2 or encoded.values.shape[-1] != expected_width:
+            raise ValueError("Encoder output width differs from its fixed adapter")
+        if encoded.positions.shape != (len(encoded.values), 3) or not torch.isfinite(encoded.positions).all():
+            raise ValueError("Invalid structural positions")
+        if not 1 <= len(encoded.values) <= self.preprocessor.config.max_signal_tokens:
+            raise ValueError("Invalid encoded token budget")
+        return EncodedSignal(self.adapters[expert](encoded.values.float()).detach(), encoded.positions.float().detach())
 
-    asset_dir contains source.json, config.json and encoder-only weights.
-    config supplies the head settings; no decision-head weights are loaded here.
-    """
-    if torch.cuda.is_available():
-        torch.backends.cuda.matmul.allow_tf32 = False
-        torch.backends.cudnn.allow_tf32 = False
-    asset_dir = Path(asset_dir)
-    source = json.loads((asset_dir / "source.json").read_text())
-    if (source["model_id"], source["revision"], source.get("format")) != (
-        NORMWEAR_ID,
-        NORMWEAR_REVISION,
-        "encoder_only",
-    ):
-        raise ValueError("Signal encoder does not match the pinned encoder-only asset")
-    for entry in source["files"]:
-        if sha256(asset_dir / entry["file"]) != entry["sha256"]:
-            raise ValueError("Signal encoder asset checksum changed")
-    core = NormWear(**json.loads((asset_dir / "config.json").read_text()))
-    core.load_state_dict(load_file(str(asset_dir / "model.safetensors")), strict=True)
-    return SignalDecision(core, **config.get("head", {}))
+    def forward(self, batch, routes=None, cache=None):
+        frames, owners, compatible = self.router_inputs(batch)
+        route_logits = self.router(frames, owners, batch.question, compatible)
+        if routes is None:
+            routes = route_logits.argmax(-1)
+        if routes.shape != (len(batch.states),) or routes.dtype != torch.long:
+            raise ValueError("Routes must be integer expert indices [B]")
+        if ((routes < 0) | (routes > 1)).any() or not compatible.gather(1, routes[:, None]).all():
+            raise ValueError("An expert route is incompatible")
+        encoded = []
+        for state, route in zip(batch.states, routes.tolist()):
+            value = cache.get_or_encode(self, state, route) if cache else self.encode(state, route)
+            encoded.append(value)
+        tokens = max(len(e.values) for e in encoded)
+        signal = batch.question.new_zeros(len(encoded), tokens, 768)
+        positions = batch.question.new_zeros(len(encoded), tokens, 3)
+        mask = torch.zeros(len(encoded), tokens, dtype=torch.bool, device=self.device)
+        for i, value in enumerate(encoded):
+            length = len(value.values)
+            signal[i, :length] = value.values.to(self.device)
+            positions[i, :length] = value.positions.to(self.device)
+            mask[i, :length] = True
+        logits = self.head(signal, mask, positions, batch.question, batch.criteria, batch.ending, batch.criteria_mask)
+        return {"logits": logits, "router_logits": route_logits, "routes": routes,
+                "criteria_mask": batch.criteria_mask}
+
+    @torch.no_grad()
+    def predict(self, state, question, criteria):
+        self.eval()
+        if not torch.isfinite(self.temperature) or self.temperature <= 0:
+            raise ValueError("Prediction temperature must be finite and positive")
+        batch = self.make_batch([state], [question], [criteria])
+        logits = self(batch)["logits"][0]
+        probabilities = (logits / self.temperature).softmax(-1).cpu().tolist()
+        chosen = min(range(len(criteria)), key=lambda i: (-probabilities[i], criteria[i]))
+        return {"choice": criteria[chosen], "probabilities": probabilities,
+                "confidence": probabilities[chosen]}

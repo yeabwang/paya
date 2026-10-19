@@ -1,105 +1,67 @@
-"""Write self-contained Paya models with verified encoder assets."""
+"""Export/load the new model, both frozen experts, BioLORD, and fixed contracts."""
 
 import argparse
 import json
-import shutil
 from pathlib import Path
+import shutil
 
-import torch
+import yaml
 
-from .inputs import ENDING
-from .provenance import (
-    PUBLIC_API,
-    TEXT_ID,
-    TEXT_REVISION,
-    identity,
-    sha256,
-    source_provenance,
-    validate_calibration,
-)
-from .text import TextEncoder
+from .checkpoint import load_checkpoint, save_checkpoint
+from .model import PayaModel
+from .provenance import RUNTIME_CONTRACT, contained_file, sha256, verify_assets
 
 
-def export(checkpoint, assets, output, calibration=None):
-    """Export head weights, encoders, text cache, notices, and an integrity manifest.
-
-    ``assets`` is an encoder-only NormWear directory. A supplied calibrator must
-    bind the exact checkpoint and public inference contract. Existing calibrated
-    state is retained when no new calibrator is supplied. Nonempty output
-    directories are never overwritten; optimizer and RNG state are omitted.
-    """
-    root = Path(output)
+def export_bundle(model, assets, output):
+    root = Path(output).resolve()
     if root.exists() and any(root.iterdir()):
-        raise FileExistsError(root)
-    state = torch.load(checkpoint, map_location="cpu", weights_only=True)
-    current_identity = identity(assets)
-    if state.get("identity") != current_identity:
-        raise ValueError("Checkpoint encoder or runtime contract differs from export")
-    checkpoint_sha256 = sha256(checkpoint)
-    temperature = float(state.get("temperature", 1.0))
-    if calibration:
-        binding = json.loads(Path(calibration).read_text())
-        temperature = validate_calibration(binding, checkpoint_sha256)
+        raise FileExistsError("Export destination must be empty")
+    if any(root.is_relative_to(Path(path).resolve()) for path in assets.values()):
+        raise ValueError("Export cannot be nested inside encoder assets")
+    if verify_assets(assets) != model.asset_identity:
+        raise ValueError("Export assets do not match the trained model")
     root.mkdir(parents=True, exist_ok=True)
-    exported_state = {
-        "head": state["head"],
-        "config": {"head": state["config"].get("head", {})},
-    }
-    exported_state.update(
-        identity=current_identity,
-        temperature=temperature,
-    )
-    torch.save(exported_state, root / "model.pt")
-    shutil.copytree(assets, root / "normwear")
-    text = TextEncoder()
-    text.encode([ENDING])
-    text.model.save(str(root / "text_encoder"))
-    if text.model_path is not None:
-        for name in ("README.md", "LICENSE", "LICENSE.metadata.json", "upstream.json"):
-            notice = Path(text.model_path) / name
-            if notice.is_file():
-                shutil.copy2(notice, root / "text_encoder" / name)
-    text_source = {
-        "model_id": TEXT_ID,
-        "revision": TEXT_REVISION,
-        "files": {
-            p.relative_to(root / "text_encoder").as_posix(): sha256(p)
-            for p in (root / "text_encoder").rglob("*")
-            if p.is_file()
-        },
-    }
-    (root / "text_encoder/source.json").write_text(json.dumps(text_source, indent=2))
-    text.save(root / "text.pt")
-    manifest = {
-        "schema_version": 2,
-        "source_checkpoint_sha256": checkpoint_sha256,
-        "public_api": dict(PUBLIC_API),
-        "source_provenance": source_provenance(),
-        "temperature": temperature,
-        "files": {
-            p.relative_to(root).as_posix(): sha256(p)
-            for p in root.rglob("*")
-            if p.is_file()
-        },
-    }
-    (root / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    for name, path in assets.items():
+        source = Path(path).resolve()
+        for entry in source.rglob("*"):
+            if not entry.resolve().is_relative_to(source):
+                raise ValueError("Asset tree contains an escaping link")
+        shutil.copytree(source, root/name, ignore=shutil.ignore_patterns(".cache", "__pycache__"))
+    save_checkpoint(root/"decision.pt", model)
+    config = {"preparation": model.identity()["preparation"]["config"], "head": model.head.config}
+    (root/"config.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
+    manifest = {"contract": RUNTIME_CONTRACT, "identity": model.identity(),
+                "calibrated": model.calibration is not None,
+                "files": {path.relative_to(root).as_posix(): sha256(path)
+                          for path in root.rglob("*") if path.is_file()}}
+    (root/"manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return manifest
 
 
-def main():
-    """Export a selected checkpoint and optional bound calibration file."""
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--checkpoint", type=Path, required=True)
-    parser.add_argument("--assets", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--calibration", type=Path)
-    args = parser.parse_args()
-    print(
-        json.dumps(export(args.checkpoint, args.assets, args.output, args.calibration))[
-            :300
-        ]
-    )
+def load_bundle(directory, device="cpu"):
+    root = Path(directory).resolve()
+    manifest = json.loads((root/"manifest.json").read_text(encoding="utf-8"))
+    if manifest.get("contract") != RUNTIME_CONTRACT:
+        raise ValueError("Unsupported bundle architecture; old exports are retired")
+    for name, expected in manifest["files"].items():
+        if sha256(contained_file(root, name)) != expected:
+            raise ValueError(f"Bundle file checksum changed: {name}")
+    config = json.loads((root/"config.json").read_text(encoding="utf-8"))
+    assets = {name: root/name for name in ("normwear", "mantis", "text")}
+    model = PayaModel.from_assets(assets, config["preparation"], config["head"], device)
+    if manifest["identity"] != model.identity():
+        raise ValueError("Bundle identities differ")
+    load_checkpoint(root/"decision.pt", model)
+    return model
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, default=Path("config/paya.yaml"))
+    parser.add_argument("--checkpoint", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args()
+    config = yaml.safe_load(args.config.read_text(encoding="utf-8"))
+    model = PayaModel.from_assets(config["assets"], config.get("preparation"), config.get("head"))
+    load_checkpoint(args.checkpoint, model)
+    print(json.dumps(export_bundle(model, config["assets"], args.output), indent=2)[:1000])

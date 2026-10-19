@@ -20,3 +20,4 @@ checkpoints/
 /third-party/**/pytorch_model*.bin
 *.tar.gz
 *.tgz
+third-party

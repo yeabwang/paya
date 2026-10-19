@@ -4,15 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "paya"
-version = "0.2.0"
+version = "0.3.0"
 description = "Paya: a non-autoregressive decision engine for body signals."
 requires-python = ">=3.11"
 dependencies = [
   "numpy>=1.26,<3", "torch>=2.6", "safetensors>=0.5",
   "transformers>=4.51,<5", "PyYAML>=6",
   "scikit-learn>=1.5", "sentencepiece>=0.2",
-  "wandb==0.30.0", "python-dotenv==1.2.4",
   "scipy>=1.13", "sentence-transformers>=3,<6",
+  "neurokit2==0.2.12", "mantis-tsfm==1.1.0",
 ]
 
 [project.optional-dependencies]
@@ -26,4 +26,4 @@ include = ["paya*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["integration: requires prepared real pretrained assets"]
+markers = ["integration: requires pinned pretrained encoder assets"]
