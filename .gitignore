@@ -3,6 +3,7 @@
 /data/
 /model/
 /runs/
+/wandb/
 /artifacts/
 /.pytest_cache/
 /.mypy_cache/
@@ -20,4 +21,3 @@ checkpoints/
 /third-party/**/pytorch_model*.bin
 *.tar.gz
 *.tgz
-third-party

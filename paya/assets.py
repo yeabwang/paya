@@ -1,10 +1,10 @@
-"""Fetch the selected, immutable Mantis checkpoint; no encoder search."""
+"""Download and verify the pinned MantisV2 checkpoint."""
 
 import argparse
 import json
 from pathlib import Path
 
-from .provenance import MANTIS_ID, MANTIS_REVISION, sha256, verify_source
+from .provenance import MANTIS_ID, MANTIS_REVISION, MANTIS_IMPLEMENTATION, sha256, verify_source
 
 
 def download_mantis(directory):
@@ -15,7 +15,7 @@ def download_mantis(directory):
     snapshot_download(MANTIS_ID, revision=MANTIS_REVISION, local_dir=str(root),
                       allow_patterns=["config.json", "model.safetensors", "README.md"])
     source = {"model_id": MANTIS_ID, "revision": MANTIS_REVISION,
-              "implementation": "mantis-tsfm==1.1.0",
+              "implementation": MANTIS_IMPLEMENTATION,
               "files": {name: sha256(root/name) for name in ("config.json", "model.safetensors", "README.md")}}
     (root/"source.json").write_text(json.dumps(source, indent=2), encoding="utf-8")
     return source

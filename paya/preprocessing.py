@@ -1,4 +1,4 @@
-"""Deterministic NeuroKit preparation, completed before the learned router."""
+"""Prepare native physiological signals for NormWear and MantisV2."""
 
 from dataclasses import dataclass, asdict
 import hashlib
@@ -12,8 +12,9 @@ from scipy.signal import resample_poly
 import torch
 
 from .inputs import UnsupportedSignalError, validate_state
+from .physiology import clean_channel, check_eeg_channels
+from .provenance import PREPARATION_CONTRACT, NATIVE_CONTRACT
 
-PREPARATION_CONTRACT = "neurokit-two-views-v2"
 MANTIS_RATES = {"ecg": 500, "eeg": 500, "accelerometer": 100, "gyroscope": 100,
                 "ppg": 125, "eda": 32, "respiration": 32, "temperature": 32, "emg": 2000}
 
@@ -23,7 +24,7 @@ class PreparationConfig:
     max_channels: int = 64
     max_samples: int = 1_000_000
     max_normwear_channels: int = 4
-    max_mantis_frames: int = 128
+    max_mantis_frames: int = 640
     max_signal_tokens: int = 1024
     time_bins: int = 8
     filter_order: int = 4
@@ -70,26 +71,29 @@ def frame_starts(length, frame, stride):
 
 
 class SignalPreprocessor:
+    """Build real encoder frames while preserving native signal levels and timing."""
+
     def __init__(self, config=None):
         self.config = config or PreparationConfig()
 
     def identity(self):
         return {"contract": PREPARATION_CONTRACT, "config": asdict(self.config),
+                "native_processing": NATIVE_CONTRACT,
                 "neurokit2": nk.__version__, "numpy": np.__version__, "scipy": scipy.__version__,
-                "resampling": "polyphase-linear-boundary", "mantis_rates": MANTIS_RATES,
+                "resampling": "centered-polyphase-linear-boundary", "mantis_rates": MANTIS_RATES,
                 "normwear_rate": 65, "normwear_samples": 390,
                 "normwear_gaussian_sigma": 1.3, "anti_alias_fraction": 0.4}
 
-    def _convert(self, channel, target):
-        # This low-pass preserves DC; task-specific high-pass cleaning is not a default.
-        cutoff = 0.4 * min(channel.rate, target)
-        clean = nk.signal_filter(channel.samples.astype(np.float64), sampling_rate=channel.rate,
-                                 highcut=cutoff, method="butterworth", order=self.config.filter_order)
-        length = round(len(clean)*target/channel.rate)
-        # NeuroKit's poly method calls this SciPy operation with implicit zero
-        # boundary padding. Linear boundary extension preserves physical DC levels
-        # (e.g. temperature) without extending the returned measurement interval.
-        result = resample_poly(clean, length, len(clean), padtype="line") if length != len(clean) else clean
+    def _convert(self, values, native_rate, target):
+        clean = values
+        if target < native_rate:
+            clean = nk.signal_filter(clean, sampling_rate=native_rate, highcut=0.4*target,
+                                     method="butterworth", order=self.config.filter_order)
+        length = round(len(clean)*target/native_rate)
+        # Centering prevents interpolation ripple from changing a constant level;
+        # linear boundary extension avoids artificial steps at the window edges.
+        offset = clean.mean()
+        result = resample_poly(clean-offset, length, len(clean), padtype="line")+offset if length != len(clean) else clean
         result = np.asarray(result, dtype=np.float32)
         if not np.isfinite(result).all():
             raise UnsupportedSignalError("Nonfinite values after NeuroKit preparation")
@@ -104,18 +108,14 @@ class SignalPreprocessor:
         duration = len(channels[0].samples) / channels[0].rate
         if not np.isfinite(duration) or duration <= 0:
             raise UnsupportedSignalError("Unrepresentable physical duration")
-        # Even the slowest configured view cannot fit a longer real interval in
-        # the token budget. Check before multiplying a pathological duration/rate.
+        # Reject extreme durations before computing resampled array sizes.
         max_duration = max(self.config.max_signal_tokens*6,
                            (self.config.max_mantis_frames+1)*256/min(MANTIS_RATES.values()))
         if duration > max_duration:
             raise UnsupportedSignalError("Physical duration exceeds every encoder token budget")
         reasons, audit = {}, {"duration_s": duration, "channels": len(channels), "preparation": self.identity()}
-        audit["quality"] = [{"flatline": bool(np.ptp(c.samples.astype(np.float64)) == 0),
-                             "minimum": float(c.samples.min()), "maximum": float(c.samples.max())}
-                            for c in channels]
 
-        def normwear_view():
+        def normwear_plan():
             if len(channels) > self.config.max_normwear_channels:
                 raise UnsupportedSignalError("NormWear channel budget exceeded")
             if any(c.sensor_type in ("temperature", "emg") for c in channels):
@@ -128,20 +128,11 @@ class SignalPreprocessor:
             count = ((lengths[0]-390+389)//390+1)*len(channels)
             if count*(1+13*self.config.time_bins) > self.config.max_signal_tokens:
                 raise UnsupportedSignalError("NormWear signal-token budget exceeded")
-            starts = frame_starts(lengths[0], 390, 390)
-            arrays = [gaussian_filter1d(nk.signal_detrend(self._convert(c, 65), order=1), 1.3)
-                      for c in channels]
-            values, bounds = [], []
-            for start in starts:
-                for array in arrays:
-                    values.append(array[start:start+390])
-                    bounds.append([start/65/duration, (start+390)/65/duration])
-            return PreparedView(torch.from_numpy(np.stack(values).astype(np.float32))[:, None],
-                                torch.tensor(bounds, dtype=torch.float32), len(channels))
+            return frame_starts(lengths[0], 390, 390)
 
-        def mantis_view():
+        def mantis_plan():
             specifications, count = [], 0
-            for c in channels:
+            for i, c in enumerate(channels):
                 rate = MANTIS_RATES[c.sensor_type]
                 length = round(len(c.samples)*rate/c.rate)
                 # Bound the prospective frame count before allocating an upsampled array.
@@ -152,24 +143,42 @@ class SignalPreprocessor:
                 starts = frame_starts(length, 512, 256)
                 if not starts:
                     raise UnsupportedSignalError(f"Mantis {c.sensor_type} needs {512/rate:g} seconds of real coverage")
-                specifications.append((c, rate, starts))
+                specifications.append((i, rate, starts))
+            return specifications
+
+        plans = []
+        for name, plan in (("normwear", normwear_plan), ("mantis", mantis_plan)):
+            try:
+                plans.append(plan())
+            except UnsupportedSignalError as error:
+                plans.append(None)
+                reasons[name] = str(error)
+        if all(p is None for p in plans):
+            raise UnsupportedSignalError(f"No compatible encoder preparation: {reasons}")
+
+        processed = [clean_channel(c) for c in channels]
+        broad, dynamic, quality = map(list, zip(*processed))
+        check_eeg_channels(channels, broad, quality)
+        audit["quality"] = quality
+        views = [None, None]
+        if plans[0] is not None:
+            arrays = [self._convert(x, c.rate, 65) for c, x in zip(channels, dynamic)]
             values, bounds = [], []
-            for c, rate, starts in specifications:
-                array = self._convert(c, rate)
+            for start in plans[0]:
+                for array in arrays:
+                    # NormWear detrending and smoothing operate within each frame.
+                    values.append(gaussian_filter1d(nk.signal_detrend(array[start:start+390], order=1), 1.3))
+                    bounds.append([start/65/duration, (start+390)/65/duration])
+            views[0] = PreparedView(torch.from_numpy(np.stack(values).astype(np.float32))[:, None],
+                                    torch.tensor(bounds, dtype=torch.float32), len(channels))
+        if plans[1] is not None:
+            values, bounds = [], []
+            for i, rate, starts in plans[1]:
+                array = self._convert(broad[i], channels[i].rate, rate)
                 for start in starts:
                     values.append(array[start:start+512])
                     bounds.append([start/rate/duration, (start+512)/rate/duration])
-            return PreparedView(torch.from_numpy(np.stack(values))[:, None],
-                                torch.tensor(bounds, dtype=torch.float32))
-
-        views = []
-        for name, build in (("normwear", normwear_view), ("mantis", mantis_view)):
-            try:
-                views.append(build())
-            except (ValueError, UnsupportedSignalError) as error:
-                views.append(None)
-                reasons[name] = str(error)
-        if all(v is None for v in views):
-            raise UnsupportedSignalError(f"No compatible encoder preparation: {reasons}")
+            views[1] = PreparedView(torch.from_numpy(np.stack(values))[:, None],
+                                    torch.tensor(bounds, dtype=torch.float32))
         audit["unavailable"] = reasons
         return PreparedState(tuple(views), digest.hexdigest(), audit)

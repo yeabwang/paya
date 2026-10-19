@@ -1,4 +1,4 @@
-"""New-contract router/head checkpoints, without frozen-weight duplication."""
+"""Save router/head weights and validate model and calibration identities."""
 
 import hashlib
 from pathlib import Path
@@ -23,6 +23,7 @@ def learned_digest(model):
 
 
 def save_checkpoint(path, model, training=None):
+    """Atomically save learned weights and optional resumable training state."""
     temperature = float(model.temperature)
     if not 0 < temperature < float("inf"):
         raise ValueError("Invalid checkpoint temperature")

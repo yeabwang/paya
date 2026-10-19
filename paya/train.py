@@ -1,9 +1,10 @@
-"""Train the new shared head and two-expert gate; never fine-tune the encoders."""
+"""Train the shared decision head and two-expert router."""
 
 import argparse
 import json
 from pathlib import Path
 import random
+from time import perf_counter
 
 import torch
 from torch.nn import functional as F
@@ -14,6 +15,7 @@ from .data import ChoiceDataset, assert_disjoint, make_batch
 from .evaluate import collect, metrics
 from .features import FeatureCache
 from .model import PayaModel, DecisionBatch
+from .tracking import open_run, run_identity, log_best
 
 
 def choice_loss(logits, targets, mask):
@@ -33,7 +35,7 @@ def subset(batch, indices):
 
 
 def expert_losses(model, batch, targets, cache=None, gradients=False):
-    """Compare only the two fixed experts for training-time routing supervision."""
+    """Compute compatible expert NLLs for head warmup and routing targets."""
     compatible = torch.stack([s.compatible for s in batch.states]).to(model.device)
     losses = batch.question.new_full((len(targets), 2), torch.inf)
     for expert in range(2):
@@ -60,7 +62,7 @@ def train(config_path, run_dir, device="cpu", resume=None):
     config = yaml.safe_load(Path(config_path).read_text(encoding="utf-8"))
     destination = Path(run_dir)
     if destination.exists() and any(destination.iterdir()) and resume is None:
-        raise FileExistsError("Use a fresh run directory for the retrained architecture")
+        raise FileExistsError("Use a fresh run directory or supply --resume")
     destination.mkdir(parents=True, exist_ok=True)
     seed = config.get("seed", 42)
     random.seed(seed); torch.manual_seed(seed)
@@ -79,72 +81,97 @@ def train(config_path, run_dir, device="cpu", resume=None):
     if not isinstance(epochs, int) or epochs < 1 or not 0 <= warmup < epochs:
         raise ValueError("Need at least one routed training epoch after head warmup")
     optimizer = torch.optim.AdamW(model.trainable_parameters(), lr=opt["lr"], weight_decay=opt.get("weight_decay", 0.01))
-    start, best = 0, float("inf")
+    start, best, step, previous_run = 0, float("inf"), 0, None
     if resume:
         payload = load_checkpoint(resume, model)
         state = payload["training"]
-        if not state or state["config"] != config:
-            raise ValueError("Resume requires an exact new-contract training configuration")
+        if not state or ({k: v for k, v in state["config"].items() if k != "wandb"}
+                         != {k: v for k, v in config.items() if k != "wandb"}):
+            raise ValueError("Resume requires the same model, data and optimizer configuration")
         optimizer.load_state_dict(state["optimizer"])
         start, best = state["epoch"], state["best_nll"]
+        step, previous_run = state["global_step"], state["wandb"]
         torch.set_rng_state(state["torch_rng"])
         random.setstate(state["python_rng"])
         if torch.cuda.is_available() and state["cuda_rng"]:
             torch.cuda.set_rng_state_all(state["cuda_rng"])
     history = []
-    for epoch in range(start, epochs):
-        total, count = 0.0, 0
-        for rows in datasets["train"].batches(config.get("batch_size", 8), seed+epoch):
-            batch = make_batch(model, rows)
-            targets = torch.tensor([row["target"] for row in rows], device=model.device)
-            optimizer.zero_grad(set_to_none=True)
-            if epoch < warmup:
-                model.train()
-                losses, compatible = expert_losses(model, batch, targets, cache, gradients=True)
-                # Every eligible expert trains the same head during warmup.
-                loss = torch.stack([losses[compatible[:, expert], expert].mean()
-                                    for expert in range(2) if compatible[:, expert].any()]).mean()
-            else:
-                model.eval()
-                with torch.no_grad():
-                    losses, compatible = expert_losses(model, batch, targets, cache)
-                    teacher = routing_targets(losses, compatible, opt.get("expert_costs", [1.0, 1.0]),
-                                              opt.get("cost_weight", 0.0), opt.get("route_temperature", 1.0))
-                model.train()
-                result = model(batch, cache=cache)
-                decision = choice_loss(result["logits"], targets, batch.criteria_mask)
-                log_routes = result["router_logits"].log_softmax(-1).masked_fill(~compatible, 0)
-                gate_loss = -(teacher*log_routes).sum(-1).mean()
-                loss = decision + opt.get("router_loss_weight", 1.0)*gate_loss
-            if not torch.isfinite(loss):
-                raise FloatingPointError("Nonfinite training loss")
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(list(model.trainable_parameters()), 1.0)
-            optimizer.step()
-            total += loss.item()*len(rows); count += len(rows)
-        records = collect(model, datasets["selection"], config.get("batch_size", 8), cache)
-        selection = metrics(records)
-        # Warmup has not trained the gate. Only the actual routed computation can
-        # be selected as the final architecture's best checkpoint.
-        improved = epoch >= warmup and selection["nll"] < best
-        if improved:
-            best = selection["nll"]
-        state = {"config": config, "epoch": epoch+1, "best_nll": best,
-                 "optimizer": optimizer.state_dict(), "torch_rng": torch.get_rng_state(),
-                 "python_rng": random.getstate(),
-                 "cuda_rng": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else [],
-                 "forbidden_calibration": {field: sorted({row[field] for name in ("train", "selection")
-                                                         for row in datasets[name].rows})
-                                           for field in ("source_id", "group_id", "recording_id")}}
-        save_checkpoint(destination/"last.pt", model, state)
-        if improved:
-            save_checkpoint(destination/"best.pt", model, state)
-        row = {"epoch": epoch+1, "phase": "head_warmup" if epoch < warmup else "routed",
-               "train_loss": total/max(1, count), "selection": selection}
-        with (destination/"history.jsonl").open("a", encoding="utf-8") as log:
-            log.write(json.dumps(row) + "\n")
-        history.append(row)
-        print(json.dumps(row), flush=True)
+    if start >= epochs:
+        return model, history
+    tracking = config.get("wandb", {})
+    with open_run(config, destination, model, datasets, previous_run) as run:
+        for epoch in range(start, epochs):
+            started = perf_counter()
+            total, count = 0.0, 0
+            for rows in datasets["train"].batches(config.get("batch_size", 8), seed+epoch):
+                batch = make_batch(model, rows)
+                targets = torch.tensor([row["target"] for row in rows], device=model.device)
+                optimizer.zero_grad(set_to_none=True)
+                gate_loss = None
+                if epoch < warmup:
+                    model.train()
+                    losses, compatible = expert_losses(model, batch, targets, cache, gradients=True)
+                    decision = torch.stack([losses[compatible[:, expert], expert].mean()
+                                            for expert in range(2) if compatible[:, expert].any()]).mean()
+                    loss = decision
+                else:
+                    model.eval()
+                    with torch.no_grad():
+                        losses, compatible = expert_losses(model, batch, targets, cache)
+                        teacher = routing_targets(losses, compatible, opt.get("expert_costs", [1.0, 1.0]),
+                                                  opt.get("cost_weight", 0.0), opt.get("route_temperature", 1.0))
+                    model.train()
+                    result = model(batch, cache=cache)
+                    decision = choice_loss(result["logits"], targets, batch.criteria_mask)
+                    log_routes = result["router_logits"].log_softmax(-1).masked_fill(~compatible, 0)
+                    gate_loss = -(teacher*log_routes).sum(-1).mean()
+                    loss = decision + opt.get("router_loss_weight", 1.0)*gate_loss
+                if not torch.isfinite(loss):
+                    raise FloatingPointError("Nonfinite training loss")
+                loss.backward()
+                gradient_norm = torch.nn.utils.clip_grad_norm_(list(model.trainable_parameters()), 1.0)
+                optimizer.step()
+                step += 1
+                total += loss.item()*len(rows); count += len(rows)
+                if run and step % tracking.get("log_every", 10) == 0:
+                    logged = {"step": step, "epoch": epoch+1, "train/loss": loss.item(),
+                              "train/answer_loss": decision.item(), "train/gradient_norm": float(gradient_norm),
+                              "train/learning_rate": optimizer.param_groups[0]["lr"]}
+                    if gate_loss is not None:
+                        logged["train/router_loss"] = gate_loss.item()
+                    run.log(logged)
+            records = collect(model, datasets["selection"], config.get("batch_size", 8), cache)
+            selection = metrics(records)
+            # Select checkpoints only after the gate starts training.
+            improved = epoch >= warmup and selection["nll"] < best
+            if improved:
+                best = selection["nll"]
+            state = {"config": config, "epoch": epoch+1, "best_nll": best, "global_step": step,
+                     "wandb": run_identity(run, tracking.get("mode", "disabled")),
+                     "optimizer": optimizer.state_dict(), "torch_rng": torch.get_rng_state(),
+                     "python_rng": random.getstate(),
+                     "cuda_rng": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else [],
+                     "forbidden_calibration": {field: sorted({row[field] for name in ("train", "selection")
+                                                             for row in datasets[name].rows})
+                                               for field in ("source_id", "group_id", "recording_id")}}
+            save_checkpoint(destination/"last.pt", model, state)
+            if improved:
+                save_checkpoint(destination/"best.pt", model, state)
+            row = {"epoch": epoch+1, "phase": "head_warmup" if epoch < warmup else "routed",
+                   "step": step, "train_loss": total/max(1, count), "selection": selection}
+            with (destination/"history.jsonl").open("a", encoding="utf-8") as log:
+                log.write(json.dumps(row) + "\n")
+            history.append(row)
+            if run:
+                logged = {"epoch": epoch+1, "step": step, "phase": row["phase"],
+                          "train/epoch_loss": row["train_loss"], "train/epoch_seconds": perf_counter()-started,
+                          **{f"selection/{k}": selection[k] for k in ("accuracy", "nll", "brier", "ece_15", "count")}}
+                for expert, name in enumerate(("normwear", "mantis")):
+                    logged[f"selection/route_fraction/{name}"] = sum(r["route"] == expert for r in records)/len(records)
+                run.log(logged)
+                if improved:
+                    log_best(run, model, destination, epoch+1, best)
+            print(json.dumps(row), flush=True)
     return model, history
 
 

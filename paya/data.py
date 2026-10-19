@@ -1,4 +1,4 @@
-"""Fresh JSONL decisions using separate state, question and ordered criteria."""
+"""Load JSONL decisions, shuffle choices and enforce independent splits."""
 
 import json
 from pathlib import Path
@@ -17,7 +17,7 @@ class ChoiceDataset:
             row = json.loads(line)
             validate_text(row.get("question"), row.get("criteria"))
             if not isinstance(row.get("state"), dict):
-                raise ValueError(f"Row {number} needs the new state object")
+                raise ValueError(f"Row {number} needs a state object")
             target = row.get("target")
             if isinstance(target, bool) or not isinstance(target, int) or not 0 <= target < len(row["criteria"]):
                 raise ValueError(f"Row {number} has an invalid target index")

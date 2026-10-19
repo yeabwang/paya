@@ -51,7 +51,7 @@ def test_fp32_cache_reuses_only_matching_preparation_and_detects_corruption(mode
         cache.get_or_encode(model, prepared_to_load, 1)
 
 
-def test_checkpoint_roundtrip_rejects_old_head_and_preserves_output(model, tmp_path):
+def test_checkpoint_roundtrip_rejects_incompatible_head_and_preserves_output(model, tmp_path):
     before = model.predict(state(), "q", ["a", "b", "c"])
     path = tmp_path/"new.pt"
     save_checkpoint(path, model)
@@ -62,9 +62,9 @@ def test_checkpoint_roundtrip_rejects_old_head_and_preserves_output(model, tmp_p
     payload = torch.load(path, weights_only=True)
     assert set(payload["learned"]) == {"router", "head"}
     assert "encoders" not in payload
-    torch.save({"head": {}, "identity": {"runtime_contract": "paya-choice-fp32-v1"}}, tmp_path/"old.pt")
+    torch.save({"contract": "unrecognized", "head": {}}, tmp_path/"invalid.pt")
     with pytest.raises(ValueError, match="two-encoder"):
-        load_checkpoint(tmp_path/"old.pt", other)
+        load_checkpoint(tmp_path/"invalid.pt", other)
 
 
 def test_old_text_banks_and_unfitted_temperatures_are_rejected(model, tmp_path):

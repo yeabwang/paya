@@ -1,4 +1,4 @@
-"""The state/question/criteria public contract. No metadata feature encoding."""
+"""Validate signal metadata, physical units and separate question/criteria inputs."""
 
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -8,13 +8,12 @@ from numbers import Real
 import numpy as np
 
 ENDING = "The answer is:"
-SCHEMA_VERSION = 2
 TYPES = ("ecg", "eeg", "accelerometer", "gyroscope", "ppg", "eda",
          "respiration", "temperature", "emg")
 
 
 class UnsupportedSignalError(ValueError):
-    """Valid measurements cannot satisfy a supported preparation contract."""
+    """The supplied measurements cannot satisfy a supported preparation."""
 
 
 @dataclass(frozen=True)
@@ -87,6 +86,10 @@ def validate_state(state, max_channels=64, max_samples=1_000_000):
             raise ValueError(f"metadata.sensor_type must be one of {TYPES}")
         kind = kind.strip().lower()
         rate = positive_number(meta.get("sampling_rate_hz"), "metadata.sampling_rate_hz")
+        if "powerline_hz" in meta:
+            powerline = meta["powerline_hz"]
+            if isinstance(powerline, (bool, np.bool_)) or not isinstance(powerline, Real) or powerline not in (0, 50, 60):
+                raise ValueError("metadata.powerline_hz must be numeric 0, 50, or 60")
         raw = np.asarray(entry.get("samples"))
         if raw.ndim != 1 or raw.dtype.kind not in "iuf" or not 2 <= raw.size <= max_samples:
             raise ValueError(f"samples must contain 2–{max_samples} real numeric measurements")
@@ -114,7 +117,7 @@ def validate_state(state, max_channels=64, max_samples=1_000_000):
                 raise ValueError("Timestamps disagree with the declared uniform sampling rate")
             if not math.isclose(ts[0], start, rel_tol=0, abs_tol=max(1e-9, 0.01/rate)):
                 raise ValueError("Timestamps disagree with start_time_s")
-        for field in ("axis", "lead", "placement"):
+        for field in ("axis", "lead", "placement", "reference"):
             if field in meta and (not isinstance(meta[field], str) or not meta[field].strip()):
                 raise ValueError(f"metadata.{field} must be a nonempty string when supplied")
         if meta.get("axis", "x").lower() not in ("x", "y", "z"):
@@ -129,7 +132,7 @@ def validate_state(state, max_channels=64, max_samples=1_000_000):
         if (abs(c.start-first.start) > max(1e-9, 0.01*sample_interval)
                 or abs(len(c.samples)/c.rate-len(first.samples)/first.rate) > max(1e-9, 0.5*sample_interval)):
             raise ValueError("Channels must describe the same measured interval")
-    # Stable physical ordering must not become a learned channel-ID embedding.
+    # Canonical ordering makes channel permutations produce identical preparations.
     return sorted(channels, key=lambda c: (c.sensor_type, str(c.metadata.get("lead", "")),
                   str(c.metadata.get("placement", "")), str(c.metadata.get("axis", "")),
                   c.samples.tobytes()))

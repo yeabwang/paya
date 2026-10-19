@@ -31,6 +31,8 @@ class DecisionBatch:
 
 
 class PayaModel(nn.Module):
+    """Route prepared waveforms to one frozen encoder and score candidate answers."""
+
     def __init__(self, normwear, mantis, text_encoder, preparation=None, head=None, asset_identity=None):
         super().__init__()
         self.encoders = nn.ModuleList((normwear, mantis)).requires_grad_(False)
@@ -76,11 +78,14 @@ class PayaModel(nn.Module):
         return (p for module in (self.router, self.head) for p in module.parameters())
 
     def make_batch(self, states, questions, criteria):
+        """Prepare signals and encode each question, choice and ending separately."""
         if not states or len(states) != len(questions) or len(states) != len(criteria):
             raise ValueError("Supply matching nonempty state/question/criteria batches")
         for q, c in zip(questions, criteria):
             validate_text(q, c)
         prepared = [s if isinstance(s, PreparedState) else self.preprocessor.prepare(s) for s in states]
+        if any(s.audit.get("preparation") != self.preprocessor.identity() for s in prepared):
+            raise ValueError("Prepared signal does not match current physiological preprocessing")
         strings = [s for q, c in zip(questions, criteria) for s in [q, *c]] + [ENDING]
         vectors = self.text_encoder.encode(strings).to(self.device).detach().clone()
         if vectors.shape != (len(strings), 768) or not torch.isfinite(vectors).all():
@@ -150,6 +155,7 @@ class PayaModel(nn.Module):
 
     @torch.no_grad()
     def predict(self, state, question, criteria):
+        """Return a choice, probabilities in criteria order and the chosen probability."""
         self.eval()
         if not torch.isfinite(self.temperature) or self.temperature <= 0:
             raise ValueError("Prediction temperature must be finite and positive")

@@ -1,4 +1,4 @@
-"""Outcome-fitted scalar temperature after freezing the actual top-1 policy."""
+"""Fit a global probability temperature on held-out outcomes."""
 
 import argparse
 import json

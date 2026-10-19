@@ -5,6 +5,8 @@ from torch import nn
 
 
 class ExpertRouter(nn.Module):
+    """Score two eligible experts using waveform convolutions and the question."""
+
     def __init__(self):
         super().__init__()
         self.waveform = nn.Sequential(nn.Conv1d(1, 16, 9, 2, 4), nn.GELU(),

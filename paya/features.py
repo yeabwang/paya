@@ -1,13 +1,11 @@
-"""FP32 frozen features bound to the full prepared-view and encoder contract."""
+"""Cache frozen FP32 features by signal, preprocessing and encoder identity."""
 
 from pathlib import Path
 
 import torch
 
 from .encoders import EncodedSignal
-from .provenance import fingerprint
-
-CACHE_CONTRACT = "two-encoder-fp32-fixed-adapter-v2"
+from .provenance import CACHE_CONTRACT, fingerprint
 
 
 def tensor_digest(values, positions):

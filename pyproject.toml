@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "paya"
-version = "0.3.0"
+dynamic = ["version"]
 description = "Paya: a non-autoregressive decision engine for body signals."
 requires-python = ">=3.11"
 dependencies = [
@@ -13,6 +13,7 @@ dependencies = [
   "scikit-learn>=1.5", "sentencepiece>=0.2",
   "scipy>=1.13", "sentence-transformers>=3,<6",
   "neurokit2==0.2.12", "mantis-tsfm==1.1.0",
+  "wandb>=0.22,<1",
 ]
 
 [project.optional-dependencies]
@@ -20,6 +21,9 @@ test = ["pytest>=8"]
 
 [tool.setuptools.packages.find]
 include = ["paya*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "paya.provenance.PACKAGE_VERSION"}
 
 [tool.setuptools.package-data]
 "paya.vendor" = ["LICENSE", "SOURCE.md"]

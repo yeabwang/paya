@@ -1,4 +1,4 @@
-"""Load a self-contained retrained model and use its separate-input predict API."""
+"""Load a self-contained inference bundle."""
 
 from .export import load_bundle
 

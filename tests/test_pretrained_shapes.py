@@ -19,6 +19,7 @@ def test_all_three_real_frozen_encoders_and_both_signal_routes():
     batch = model.make_batch([state()], ["Which heart-rate category describes this signal?"],
                              [["Slow heart rate", "Normal heart rate", "Fast heart rate"]])
     report = {"purpose": "synthetic shape checks; untrained router/head; no performance evaluation",
+              "preparation": model.preprocessor.identity(),
               "question": list(batch.question.shape), "criteria": list(batch.criteria.shape),
               "ending": list(batch.ending.shape), "routes": {}}
     with torch.no_grad():
@@ -37,8 +38,7 @@ def test_all_three_real_frozen_encoders_and_both_signal_routes():
     assert list(result) == ["choice", "probabilities", "confidence"]
     assert len(result["probabilities"]) == 3 and abs(sum(result["probabilities"])-1) < 1e-6
     assert all(not p.requires_grad for p in model.encoders.parameters())
-    # Verify the real frozen-text tensors can feed a trainable head, without an
-    # optimizer step or any model training run.
+    # Verify gradients stop at frozen encoders without an optimizer step.
     model.train()
     gradients = model(batch)
     (torch.nn.functional.cross_entropy(gradients["logits"], torch.tensor([1]))

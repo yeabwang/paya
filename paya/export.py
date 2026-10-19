@@ -1,4 +1,4 @@
-"""Export/load the new model, both frozen experts, BioLORD, and fixed contracts."""
+"""Export and verify self-contained inference bundles."""
 
 import argparse
 import json
@@ -42,7 +42,7 @@ def load_bundle(directory, device="cpu"):
     root = Path(directory).resolve()
     manifest = json.loads((root/"manifest.json").read_text(encoding="utf-8"))
     if manifest.get("contract") != RUNTIME_CONTRACT:
-        raise ValueError("Unsupported bundle architecture; old exports are retired")
+        raise ValueError("Unsupported bundle architecture")
     for name, expected in manifest["files"].items():
         if sha256(contained_file(root, name)) != expected:
             raise ValueError(f"Bundle file checksum changed: {name}")

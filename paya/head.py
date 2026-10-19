@@ -55,6 +55,8 @@ class FusionBlock(nn.Module):
 
 
 class DecisionHead(nn.Module):
+    """Fuse text self-attention with signal cross-attention and score each choice."""
+
     def __init__(self, width=256, layers=2, heads=4, dropout=0.1):
         super().__init__()
         if width <= 0 or heads <= 0 or width % heads or layers <= 0 or not 0 <= dropout < 1:

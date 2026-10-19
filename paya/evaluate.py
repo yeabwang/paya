@@ -1,4 +1,4 @@
-"""Outcome evaluation uses the same preprocessing, top-1 gate, and shared head."""
+"""Measure decision accuracy, NLL, Brier score and calibration error."""
 
 import argparse
 import json

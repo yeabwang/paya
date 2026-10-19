@@ -7,33 +7,18 @@ from pathlib import Path
 
 import torch
 
-from .provenance import TEXT_ID, TEXT_REVISION, sha256
-
-IDENTITY = {
-    "contract": "biolord-separate-text-v2",
-    "model_id": TEXT_ID,
-    "revision": TEXT_REVISION,
-    "pooling": "sentence-transformers-default",
-    "normalize": True,
-    "dimension": 768,
-}
+from .provenance import TEXT_ID, TEXT_REVISION, TEXT_IDENTITY, VERSION, sha256
 
 
 class TextEncoder:
-    """Lazily load frozen BioLORD and memoize normalized 768-dimensional vectors.
-
-    model_path selects explicit local assets; otherwise use third-party/biolord
-    when available or the pinned upstream revision. Cached vectors live on CPU.
-    Unknown strings are encoded on demand; save() persists the current cache.
-    """
+    """Load frozen BioLORD on demand and cache normalized sentence vectors on CPU."""
 
     def __init__(self, cache=None, device="cpu", model_path=None):
-        """Load an optional embedding cache and verify its encoder identity and vectors."""
         self.device, self.model_path, self.model = device, model_path, None
         self.embeddings = {}
         if cache is not None and Path(cache).exists():
             payload = torch.load(cache, map_location="cpu", weights_only=True)
-            if payload.get("identity") != IDENTITY:
+            if payload.get("identity") != TEXT_IDENTITY:
                 raise ValueError("Text bank does not match pinned BioLORD processing")
             for text, vector in payload["embeddings"].items():
                 if vector.shape != (768,) or not torch.isfinite(vector).all():
@@ -41,12 +26,7 @@ class TextEncoder:
                 self.embeddings[text] = vector.float()
 
     def encode(self, strings):
-        """Return [len(strings), 768] vectors, encoding only missing strings.
-
-        Local model files must match their provenance record. Reject text exceeding
-        the tokenizer context instead of silently truncating it. Return CPU vectors
-        even when the underlying text encoder runs on a GPU.
-        """
+        """Return separate [N,768] CPU vectors; reject texts above the token limit."""
         if not isinstance(strings, list) or not strings or any(not isinstance(s, str) or not s.strip() for s in strings):
             raise ValueError("Encode a nonempty list of separate, nonempty text strings")
         missing = list(dict.fromkeys(s for s in strings if s not in self.embeddings))
@@ -110,22 +90,21 @@ class TextEncoder:
         return torch.stack([self.embeddings[s] for s in strings])
 
     def save(self, path):
-        """Persist encoder identity and current CPU embeddings, creating parent directories."""
+        """Save cached vectors with their encoder identity."""
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        torch.save({"identity": IDENTITY, "embeddings": self.embeddings}, path)
+        torch.save({"identity": TEXT_IDENTITY, "embeddings": self.embeddings}, path)
 
 
 def main():
-    """Build or extend a text cache from a JSON list of strings."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--texts", type=Path, required=True)
-    parser.add_argument("--output", type=Path, default=Path("cache/body-v2-text.pt"))
+    parser.add_argument("--output", type=Path, default=Path(f"cache/{VERSION}/text.pt"))
     parser.add_argument("--device", default="cpu")
     args = parser.parse_args()
     encoder = TextEncoder(args.output, args.device)
     encoder.encode(json.loads(args.texts.read_text()))
     encoder.save(args.output)
-    print(json.dumps({"texts": len(encoder.embeddings), "identity": IDENTITY}))
+    print(json.dumps({"texts": len(encoder.embeddings), "identity": TEXT_IDENTITY}))
 
 
 if __name__ == "__main__":

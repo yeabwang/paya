@@ -25,7 +25,6 @@ class Mlp(nn.Module):
         self.fc2 = nn.Linear(hidden, width)
 
     def forward(self, x):
-        """Transform [..., width] inputs through the expanded hidden representation."""
         return self.fc2(self.act(self.fc1(x)))
 
 
@@ -62,7 +61,6 @@ class Block(nn.Module):
         self.mlp = Mlp(width, int(width * mlp_ratio))
 
     def forward(self, x):
-        """Return [batch, tokens, width] after both residual updates."""
         x = x + self.attn(self.norm1(x))
         return x + self.mlp(self.norm2(x))
 

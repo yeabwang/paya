@@ -1,21 +1,33 @@
-"""Only the new two-encoder contract is loadable; there is no v1 migration path."""
+"""Paya versions, frozen-model identities and artifact checksums."""
 
 import hashlib
 import json
 from pathlib import Path
 
+PACKAGE_VERSION = "1.0.0"
+VERSION = f"v{PACKAGE_VERSION.split('.')[0]}"
+INPUT_SCHEMA_VERSION = int(VERSION[1:])
+RUNTIME_CONTRACT = f"paya-body-decision-{VERSION}"
+PREPARATION_CONTRACT = f"neurokit-native-physiology-{VERSION}"
+NATIVE_CONTRACT = f"wearable-native-cleaning-{VERSION}"
+CACHE_CONTRACT = f"two-encoder-fp32-fixed-adapter-{VERSION}"
+TEXT_CONTRACT = f"biolord-separate-text-{VERSION}"
+
 NORMWEAR_ID = "mosaic-laboratory/normwear"
 NORMWEAR_REVISION = "c35a3d1ecda1cb971f1f89caaa3ee4b4c6ad8e84"
 MANTIS_ID = "paris-noah/MantisV2"
 MANTIS_REVISION = "8f6ca35cb54ab14b120618943c6fca5ddf5a76a6"
+MANTIS_IMPLEMENTATION = "mantis-tsfm==1.1.0"
 TEXT_ID = "FremyCompany/BioLORD-2023"
 TEXT_REVISION = "167aab527b238a50ca65224e6319215d2ff4fc9f"
-RUNTIME_CONTRACT = "paya-body-decision-v2"
-ARCHITECTURE = {"router": "waveform-conv16-conv32-question128-gate64-top1-v2",
+TEXT_IDENTITY = {"contract": TEXT_CONTRACT, "model_id": TEXT_ID, "revision": TEXT_REVISION,
+                 "pooling": "sentence-transformers-default", "normalize": True, "dimension": 768}
+
+ARCHITECTURE = {"router": f"waveform-conv16-conv32-question128-gate64-top1-{VERSION}",
                 "signal_width": 768, "adapters": ["identity768", "right-zero-pad512-to768"],
                 "mantis_layer": 2, "mantis_output": "combined",
-                "text_processing": "biolord-separate-text-v2-normalized-mean-128",
-                "ending": "The answer is:", "input_schema": 2,
+                "text_processing": f"{TEXT_CONTRACT}-normalized-mean-128",
+                "ending": "The answer is:", "input_schema": INPUT_SCHEMA_VERSION,
                 "output": ["choice", "probabilities", "confidence"]}
 
 

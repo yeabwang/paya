@@ -53,11 +53,7 @@ class NormWear(nn.Module):
         mlp_ratio=4.0,
         fuse_freq=2,
     ):
-        """Construct encoder layers from the pinned upstream configuration.
-
-        nvar is retained for configuration compatibility; forward derives the
-        actual channel count from the supplied waveform tensor.
-        """
+        """Load upstream dimensions; forward derives the actual sensor count."""
         super().__init__()
         self.embed_dim = embed_dim
         self.patch_embed = PatchEmbed(img_size, patch_size, in_chans, embed_dim)
@@ -92,11 +88,7 @@ class NormWear(nn.Module):
         return torch.cat((self.pos_embed[:, :1], positions), dim=1)
 
     def forward(self, signals):
-        """Encode [batch, sensors, samples] into normalized sensor/patch embeddings.
-
-        Apply the retained signal/first-difference/second-difference wavelet
-        frontend, patch embedding, transformer blocks, and final layer normalization.
-        """
+        """Map [batch, sensors, samples] to [batch, sensors, patches+1, width]."""
         batch, sensors, length = signals.shape
         spec = cwt_wrap(signals.reshape(batch * sensors, length), 0.1, 64).float()
         positions = self.position_embedding(spec.shape[-2:])
@@ -112,7 +104,7 @@ class NormWear(nn.Module):
 def ricker_wavelet(points, scale):
     """Return the normalized Ricker wavelet for a scalar tensor scale."""
 
-    A = 2 / (torch.sqrt(3 * scale) * torch.pi**0.25)  # Normalization factor
+    A = 2 / (torch.sqrt(3 * scale) * torch.pi**0.25)
     wsq = scale**2
     vec = torch.arange(0, points, device=scale.device) - (points - 1.0) / 2
     xsq = vec**2
@@ -123,42 +115,31 @@ def ricker_wavelet(points, scale):
 
 
 def cwt_ricker(x, lowest_scale, largest_scale, step=1):
-    """Convolve [batch, samples] waveforms with the retained Ricker scale bank.
-
-    Return [batch, scales, output_samples]. Kernel length is derived from
-    the largest scale and input length. With the preserved padding rule,
-    an even-length kernel adds one output sample.
-    """
+    """Return [batch, scales, time]; even kernels add one sample under upstream padding."""
     _, sequence_length = x.shape
-    x = x.unsqueeze(1)  # Add channel dimension, now (batch_size, 1, sequence_length)
-
-    # Generate scales
+    x = x.unsqueeze(1)
     scales = torch.arange(lowest_scale, largest_scale + step, step, device=x.device)
     num_scales = scales.shape[0]
 
-    # Prepare the wavelet basis for each scale
     wavelet_len = min(10 * largest_scale, sequence_length)
     wavelets = torch.stack([ricker_wavelet(wavelet_len, scale) for scale in scales])
-    wavelets = wavelets.view(num_scales, 1, -1)  # (num_scales, 1, wavelet_len)
+    wavelets = wavelets.view(num_scales, 1, -1)
 
-    # Perform convolution for each scale
     cwt_output = F.conv1d(x, wavelets, padding=wavelet_len // 2)
 
     return cwt_output
 
 
 def cwt_wrap(x, lowest_scale, largest_scale, step=1):
-    # x: bn, L
-    # return: bn, 3, L, n_mels
     """Stack signal and two finite differences, then return [batch, 3, time, scales]."""
-    d1 = x[:, 1:] - x[:, :-1]  # bn, L-1
-    d2 = d1[:, 1:] - d1[:, :-1]  # bn, L-2
+    d1 = x[:, 1:] - x[:, :-1]
+    d2 = d1[:, 1:] - d1[:, :-1]
     x = (
         torch.stack([x[:, 2:], d1[:, 1:], d2]).float().permute(1, 0, 2)
-    )  # batch, 3, length-2
+    )
     bn, n_, new_L = x.shape
     cwt_res = cwt_ricker(
         x.reshape(bn * n_, new_L), lowest_scale, largest_scale, step=step
-    )  # bn*3, 65, new_L
+    )
     _, n_scale, new_L = cwt_res.shape
     return cwt_res.reshape(bn, n_, n_scale, new_L).permute(0, 1, 3, 2)
