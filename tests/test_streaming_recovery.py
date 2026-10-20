@@ -92,7 +92,8 @@ def test_dictionary_encoded_signals_do_not_bypass_numeric_memory_budget(tmp_path
         ChoiceDataset(path)
 
 
-def test_mid_epoch_resume_matches_uninterrupted_weights_with_dropout(tmp_path,monkeypatch):
+@pytest.mark.parametrize('cache_format',['files','sqlite'])
+def test_mid_epoch_resume_matches_uninterrupted_weights_with_dropout(tmp_path,monkeypatch,cache_format):
     import paya.train as module
     from paya.head import DecisionHead
     def factory(*args,**kwargs):
@@ -106,6 +107,8 @@ def test_mid_epoch_resume_matches_uninterrupted_weights_with_dropout(tmp_path,mo
         path.write_text('\n'.join(json.dumps(r) for r in rows(count,split))+'\n')
         paths[split]=str(path)
     config={'assets':{},'data':paths,'batch_size':3,'threads':2,'seed':42,
+            'feature_cache':str(tmp_path/('features.sqlite3' if cache_format=='sqlite' else 'features')),
+            'feature_cache_format':cache_format,
             'optim':{'epochs':2,'lr':0.001,'checkpoint_every_steps':1}}
     path=tmp_path/'config.yaml';path.write_text(yaml.safe_dump(config))
     uninterrupted,_=module.train(path,tmp_path/'baseline')

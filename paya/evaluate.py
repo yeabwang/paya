@@ -88,7 +88,7 @@ def metrics(records, temperature=1.0):
 
 if __name__ == "__main__":
     from .checkpoint import load_checkpoint
-    from .features import FeatureCache
+    from .features import open_feature_cache
     from .model import PayaModel
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=Path("config/paya.yaml"))
@@ -101,7 +101,7 @@ if __name__ == "__main__":
     model = PayaModel.from_assets(config["assets"], config.get("preparation"), config.get("head"), args.device)
     load_checkpoint(args.checkpoint, model)
     dataset = ChoiceDataset(config["data"][args.split])
-    cache = FeatureCache(config["feature_cache"]) if config.get("feature_cache") else None
+    cache = open_feature_cache(config)
     records = collect(model, dataset, config.get("batch_size", 8), cache,
                       output_path=args.output.with_suffix(".predictions.jsonl"))
     report = {"split": args.split, "calibrated": model.calibration is not None,

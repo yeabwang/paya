@@ -83,7 +83,7 @@ class PayaModel(nn.Module):
         if any(s.audit.get("preparation") != self.preprocessor.identity() for s in prepared):
             raise ValueError("Prepared signal does not match current preprocessing")
         strings = [s for q, c in zip(questions, criteria) for s in [q, *c]]
-        vectors = self.text_encoder.encode(strings).to(self.device).detach().clone()
+        vectors = self.text_encoder.encode(strings).detach().cpu().clone()
         if vectors.shape != (len(strings), 768) or not torch.isfinite(vectors).all():
             raise ValueError("BioLORD must return finite, separate 768-dimensional vectors")
         width, offset = max(map(len, criteria)), 0
@@ -106,11 +106,27 @@ class PayaModel(nn.Module):
         return encoded.float().detach()
 
     def forward(self, batch, cache=None):
-        encoded = [cache.get_or_encode(self, state) if cache else self.encode(state) for state in batch.states]
-        signal = torch.stack([e.to(self.device) for e in encoded])
-        mask = torch.ones(len(encoded), 1, dtype=torch.bool, device=self.device)
+        if cache is not None and hasattr(cache, "get_many_or_encode"):
+            signal = cache.get_many_or_encode(self, batch.states)[:, None, :]
+        else:
+            encoded = [cache.get_or_encode(self, state) if cache else self.encode(state) for state in batch.states]
+            signal = torch.stack([e.to(self.device) for e in encoded])
+        mask = torch.ones(len(batch.states), 1, dtype=torch.bool, device=self.device)
         logits = self.head(signal, mask, batch.question, batch.criteria, batch.criteria_mask)
         return {"logits": logits, "criteria_mask": batch.criteria_mask}
+
+    @torch.no_grad()
+    def encode_batch(self, prepared):
+        samples = [self.preprocessor.format(value).samples for value in prepared]
+        if len({tuple(value.shape) for value in samples}) != 1:
+            raise ValueError("Batch signal encoding requires matching native shapes")
+        if hasattr(self.encoder, "forward_batch"):
+            encoded = self.encoder.forward_batch(torch.stack(samples).to(self.device))
+        else:
+            encoded = torch.cat([self.encode(value) for value in prepared])
+        if encoded.shape != (len(prepared), 512) or not torch.isfinite(encoded).all():
+            raise ValueError("Encoder must return finite signal vectors [B,512]")
+        return encoded.float().detach()
 
     @torch.no_grad()
     def predict(self, state, question, criteria):

@@ -11,7 +11,7 @@ import yaml
 from .checkpoint import learned_digest, load_checkpoint, save_checkpoint
 from .data import ChoiceDataset, assert_disjoint
 from .evaluate import collect, metrics
-from .features import FeatureCache
+from .features import open_feature_cache
 from .model import PayaModel
 
 
@@ -55,7 +55,7 @@ if __name__ == "__main__":
     if not payload["training"]:
         raise ValueError("Calibration requires a retrained decision checkpoint")
     dataset = ChoiceDataset(config["data"]["calibration"])
-    cache = FeatureCache(config["feature_cache"]) if config.get("feature_cache") else None
+    cache = open_feature_cache(config)
     fitted = fit_temperature(model, dataset, payload["training"]["forbidden_calibration"],
                              config.get("batch_size", 8), cache, args.output.with_suffix('.predictions.jsonl'))
     save_checkpoint(args.output, model, payload["training"])

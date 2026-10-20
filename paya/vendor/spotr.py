@@ -168,6 +168,19 @@ def encode(core, samples):
         raise ValueError("Pinned SPOTR must return finite tokens [1,1+C+N,512]")
     return tokens[:, 0]
 
+
+def encode_batch(core, samples):
+    """Encode equally shaped recordings independently in one device operation."""
+    if (samples.ndim != 3 or not len(samples) or not 1 <= samples.shape[1] <= MAX_CHANNELS
+            or not MIN_SAMPLES <= samples.shape[2] <= MAX_SAMPLES or not torch.isfinite(samples).all()):
+        raise ValueError("SPOTR expects finite [B,C,L] samples within native budgets")
+    batch, channels, length = samples.shape
+    tokens = core(samples)
+    patches = 2*((length+199)//200)
+    if tokens.shape != (batch, 1+channels+patches, WIDTH) or not torch.isfinite(tokens).all():
+        raise ValueError("Pinned SPOTR returned invalid batch tokens")
+    return tokens[:, 0]
+
 def download_encoder(directory, checkpoint=None):
     """Verify published tensor weights before converting them to safetensors."""
     import json

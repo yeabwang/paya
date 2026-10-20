@@ -4,6 +4,8 @@ Configure assets, dataset paths, preparation budgets and optimizer settings in [
 
 [config/paya-full.yaml](../config/paya-full.yaml) defines the first full-data Paya baseline: three epochs, batch size 16, a fresh decision head, online metrics and local model checkpoints. It uses the processed split manifests under `data/training`, preserves the inherited splits, selects `best.pt` by selection NLL, and evaluates that checkpoint on the test split. No independent calibration split is available for this run, so report uncalibrated results with temperature 1. Rare or absent validation classes remain a coverage limitation; inspect per-task results alongside pooled metrics.
 
+The first run was interrupted at the user's request during migration to another GPU. [config/paya-fast.yaml](../config/paya-fast.yaml) configures its fresh replacement. Benchmark the batch size on that GPU before launching; larger batches change optimizer updates per epoch. This run reserves connected subject groups within the supplied validation split for independent selection and calibration roles, leaving native train/test membership unchanged. Shared waveform or recording identities bind groups together. Assign components deterministically using `paya-calibration-v1`; SHA256's first 64 bits modulo 5 selects calibration when zero. Audit all four roles for overlap before training and report role-specific class coverage. Select the head with selection NLL, fit a global temperature on calibration outcomes, then report both uncalibrated and calibrated test metrics from the same test logits. Wait for user review before another training round.
+
 ## Dataset
 
 JSONL rows and Parquet rows share the same input format:
@@ -49,6 +51,8 @@ python -m paya.train --config config/paya.yaml --run-dir runs/paya-v1 --resume r
 Resume restores the next batch within the epoch, accumulated epoch loss, optimizer, RNG state, completed epoch history and W&B identity. Shuffling does not depend on how many earlier blocks were decoded, so it can skip committed batches without replaying their waveform reads. Dataset content hashes must match, and changes detected during iteration abort the run. Local history is reconciled to the committed checkpoint. Online tracking records the recovered step and may replay its final saved metrics; remote logging is not a filesystem transaction. Keep the dataset files/manifests available for later calibration provenance checks. Do not edit a dataset during an active run.
 
 ## W&B
+
+For batched frozen encoding, set `feature_cache_format: sqlite` and point `feature_cache` at a SQLite file. Missing recordings with matching native channel/sample shapes are encoded together without external padding or mixing channels across recordings. FP32 vectors are deduplicated within a batch and stored under preparation identities with content checksums and a model/asset binding. SQLite uses durable transactions and a bounded page cache. The default file cache remains supported. Text vectors are assembled on the CPU and transferred as batch tensors. The public state/question/criteria format and learned model architecture remain unchanged. Check numerical equivalence on actual pretrained weights before using a new GPU or batching configuration.
 
 The default configuration enables online tracking:
 

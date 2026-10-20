@@ -18,3 +18,7 @@ class SignalEncoder(nn.Module):
     @torch.no_grad()
     def forward(self, encoder_input):
         return signal.encode(self.core, encoder_input.samples)
+
+    @torch.no_grad()
+    def forward_batch(self, samples):
+        return signal.encode_batch(self.core, samples)

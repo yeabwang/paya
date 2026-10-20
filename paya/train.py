@@ -14,7 +14,7 @@ import yaml
 from .checkpoint import save_checkpoint, load_checkpoint
 from .data import ChoiceDataset, assert_disjoint, make_batch
 from .evaluate import collect, metrics
-from .features import FeatureCache
+from .features import open_feature_cache
 from .model import PayaModel
 from .tracking import open_run, run_identity, log_best
 from .atomic import atomic_output
@@ -47,7 +47,7 @@ def train(config_path, run_dir, device="cpu", resume=None):
         raise ValueError("Training and independent selection datasets are required")
     assert_disjoint(*datasets.values())
     model = PayaModel.from_assets(config["assets"], config.get("preparation"), config.get("head"), device)
-    cache = FeatureCache(config["feature_cache"]) if config.get("feature_cache") else None
+    cache = open_feature_cache(config)
     opt = config["optim"]
     epochs = opt["epochs"]
     if isinstance(epochs, bool) or not isinstance(epochs, int) or epochs < 1:
