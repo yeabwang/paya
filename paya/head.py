@@ -14,6 +14,10 @@ class CrossAttention(nn.Module):
         self.output = nn.Linear(width, width)
 
     def forward(self, text, signal, signal_mask):
+        if not self.training and signal.shape[1] == 1:
+            # A one-key softmax is one; avoid unused query/key work at inference.
+            value = self.value(signal) * signal_mask[..., None]
+            return self.output(value.expand(-1, text.shape[1], -1))
         def split(x):
             return x.reshape(x.shape[0], x.shape[1], self.heads, -1).transpose(1, 2)
         q = split(self.query(text))

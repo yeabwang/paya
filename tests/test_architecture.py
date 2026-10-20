@@ -13,7 +13,7 @@ from conftest import state
 def test_layer_shapes_and_separate_text_encoding(model):
     seen, handles = {}, []
     for name, module in (("text_input", model.head.text_input[0]),
-                         ("key", model.head.blocks[0].cross_attention.key),
+                         ("value", model.head.blocks[0].cross_attention.value),
                          ("ff", model.head.blocks[0].feed_forward[0]), ("scorer", model.head.scorer)):
         handles.append(module.register_forward_hook(lambda m, x, y, name=name:
                        seen.setdefault(name, []).append((tuple(x[0].shape), tuple(y.shape)))))
@@ -25,7 +25,7 @@ def test_layer_shapes_and_separate_text_encoding(model):
     assert model.head.roles.shape == (2, 256) and "ending" not in vars(batch)
     assert set(result) == {"logits", "criteria_mask"} and result["logits"].shape == (1, 3)
     assert seen["text_input"][0] == ((1, 4, 768), (1, 4, 256))
-    assert seen["key"][0] == ((1, 1, 512), (1, 1, 256))
+    assert seen["value"][0] == ((1, 1, 512), (1, 1, 256))
     assert seen["ff"][0] == ((1, 4, 256), (1, 4, 1024))
     assert seen["scorer"][0] == ((1, 3, 256), (1, 3, 1))
 
