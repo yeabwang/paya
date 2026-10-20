@@ -81,3 +81,31 @@ natural cross-entropy, clipped square-root class weighting, label smoothing,
 and the smaller interaction head. All reported comparisons use the same rows
 and optimizer budget. Expand successful candidates only. Small pilots may miss
 rare classes; report support and verify on full selection before conclusions.
+
+### Preparation and reproducibility
+
+The development bank stores FP32 frozen features plus independently indexed
+text vectors, candidate masks, targets and task labels used only for reporting
+and training weights. It validates mapping-ID alignment during extraction and
+checksums all bank files before use. Partial banks have no completion manifest
+and cannot train. It does not load calibration or test. Sampling uses a fixed
+mapping-ID hash and is independent of labels. The bank retains only the existing
+native train/selection memberships and pins the original frozen model identity.
+
+On 20 representative row groups (320 sampled rows), converting complete Arrow
+groups to Python took 3.063 seconds; selecting rows in Arrow first took 0.578
+seconds. The builder now selects before conversion and reuses file readers.
+This is a preparation microbenchmark, not a measured end-to-end training speedup.
+
+Experimental training checkpoints include optimizer, RNG, online run ID, source
+hashes, exact plan and bank bindings. They resume the same bounded experiment;
+completed variants are not relaunched. Pilot draws are uniform with replacement
+from the fixed sample, batch 256, 800 optimizer updates, evaluation every 200.
+Head selection uses minimum selection NLL; macro F1/AUROC and waveform ablation
+remain separately visible. Weighted variants use training-only square-root
+inverse class frequency, raw cap 4, then task-wise normalization to unit mean.
+Smoothing is 0.05 over real candidates only, never padding.
+
+Verification before pilot: 158 local unit tests passed, followed by a new bank
+alignment/corruption check and the existing focused checks (9 passed). The
+experimental interaction head is not wired into the public model or promoted.

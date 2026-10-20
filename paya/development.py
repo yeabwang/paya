@@ -136,6 +136,8 @@ def main():
     parser.add_argument('--plan', type=Path, required=True)
     args = parser.parse_args()
     plan = json.loads(args.plan.read_text())
+    code = {str(path.relative_to(Path(__file__).parent)): sha256(path)
+            for path in sorted(Path(__file__).parent.rglob('*.py'))}
     torch.set_num_threads(8)
     root = Path(plan['directory']); root.mkdir(parents=True, exist_ok=True)
     train = Bank('cache/paya-development/train', plan.get('train_limit'))
@@ -159,7 +161,7 @@ def main():
         weights = torch.tensor(class_weights(train.rows) if experiment.get('weighted')
                                else np.ones(len(train.rows), dtype=np.float32), device='cuda')
         optimizer = torch.optim.AdamW(head.parameters(), lr=experiment.get('lr', 3e-4), weight_decay=.01)
-        binding = fingerprint({'plan': plan, 'experiment': experiment,
+        binding = fingerprint({'plan': plan, 'experiment': experiment, 'code': code,
                                'train': train.sha256, 'selection': selection.sha256})
         resume = destination / 'last.pt'
         begin, best, best_state, history = 0, float('inf'), None, []
@@ -173,7 +175,7 @@ def main():
             previous = saved['wandb']
         settings = deepcopy(config)
         settings['wandb'].update(name='paya-' + experiment['name'], log_models=False)
-        settings['experiment'] = {**experiment, 'plan': plan, 'binding': binding}
+        settings['experiment'] = {**experiment, 'plan': plan, 'binding': binding, 'code_sha256': code}
         proxies = {name: SimpleNamespace(rows=bank.rows, sha256=bank.sha256)
                    for name, bank in [('train', train), ('selection', selection)]}
         started = perf_counter()
@@ -215,7 +217,7 @@ def main():
                             'rng': torch.get_rng_state(), 'cuda_rng': torch.cuda.get_rng_state_all(),
                             'wandb': {'id': run.id, 'entity': run.entity, 'project': run.project, 'mode': 'online'}}, out)
             head.load_state_dict(best_state)
-            result = {'config': experiment, 'binding': binding, 'train_rows': len(train.rows),
+            result = {'config': experiment, 'binding': binding, 'code_sha256': code, 'train_rows': len(train.rows),
                 'selection_rows': len(selection.rows), 'seconds': perf_counter() - started,
                 'parameters': sum(p.numel() for p in head.parameters()), 'history': history,
                 'selected_by': 'lowest selection NLL among evaluated steps',

@@ -35,3 +35,25 @@ def test_interaction_head_candidate_permutation_padding_and_signal_gradient():
     torch.testing.assert_close(head(s, sm, q, c[:, order], cm[:, order]), z[:, order])
     z[cm].sum().backward()
     assert s.grad.abs().sum() > 0 and z[0, 2].isneginf()
+
+
+def test_bank_indices_align_rows_and_features_and_detect_corruption(tmp_path):
+    import json
+    from paya.development import Bank
+    from paya.provenance import sha256
+    arrays = {'signals':np.arange(4*512,dtype=np.float32).reshape(4,512),
+        'questions':np.ones((2,768),dtype=np.float32), 'criteria':np.ones((3,768),dtype=np.float32),
+        'question_indices':np.array([0,1,0,1]), 'criteria_indices':np.array([[0,1,-1]]*4),
+        'targets':np.array([0,1,0,1])}
+    for name,values in arrays.items():np.save(tmp_path/(name+'.npy'),values)
+    (tmp_path/'rows.jsonl').write_text(''.join(json.dumps({'index':i})+'\n' for i in range(4)))
+    manifest={'rows':4,'binding':'fixture','files':{p.name:sha256(p) for p in tmp_path.iterdir()}}
+    (tmp_path/'manifest.json').write_text(json.dumps(manifest))
+    bank=Bank(tmp_path,limit=3,device='cpu')
+    for i,row in enumerate(bank.rows):
+        assert row['index']==bank.indices[i]
+        assert bank.signal[i,0,0]==row['index']*512
+    assert bank.batch(torch.tensor([0]))[-1].tolist()==[[True,True,False]]
+    (tmp_path/'targets.npy').write_bytes(b'corrupt')
+    with pytest.raises(ValueError,match='checksum'):
+        Bank(tmp_path,device='cpu')
