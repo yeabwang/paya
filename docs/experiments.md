@@ -146,3 +146,36 @@ interaction head using all 102,345 development training rows, batch 512 and
 and under a mean-signal ablation. The whole selection set remains development
 data, so these comparisons do not constitute an untouched test result. No pilot
 variant has been promoted to the public inference model.
+
+### Expanded results (all 196,707 selection rows)
+
+| Model | Accuracy | NLL | Brier | ECE | Task macro F1 | Task macro AUROC |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Full-run reference | 67.12% | 1.01766 | 0.49039 | 0.09868 | 0.26318 | 0.63589 |
+| Attention CE | 68.37% | 0.80803 | 0.45195 | 0.10195 | 0.33156 | 0.68711 |
+| Attention weighted + smoothing | 66.88% | 0.78627 | 0.44779 | 0.03186 | 0.36954 | 0.68515 |
+| Interaction CE | 68.43% | 0.81303 | 0.45140 | 0.09089 | 0.35053 | 0.70535 |
+
+The 264,065-parameter interaction head improves all six displayed validation
+metrics over the 2,567,681-parameter reference head. It was selected at step
+800 by the declared 16,384-row subset NLL, not by test results. This is evidence
+to expand, not a test generalization claim. Training used 102,345 rows rather
+than the reference run's 1,637,289; optimization/data budgets differ and are
+explicit. No prior full-run hyperparameters were changed retroactively.
+
+Waveform sensitivity is substantially stronger in the larger runs: mean-signal
+replacement drops attention CE accuracy from 68.37% to 44.78%, and weighted/
+smoothed accuracy from 66.88% to 35.42%. This rejects an explanation based only
+on task label frequencies for those trained heads.
+
+Next recursion: compare smoothing alone and weighting plus smoothing on the
+smaller interaction head, with exactly the same larger-stage rows and update
+budget. Then nominate a configuration before independent calibration and any
+retrospective test evaluation. Baseline test results already influenced the
+overall research direction; that historical test must not be called unseen.
+
+An inference-only single-token attention shortcut skips query/key projections:
+softmax over one unmasked key is exactly one. Masked values still contribute
+zero. Training/dropout and multi-token attention retain the existing path.
+161 unit tests passed, including explicit comparison against general attention.
+Latency improvement remains to be measured on an otherwise idle GPU.

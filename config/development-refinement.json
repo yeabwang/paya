@@ -1,0 +1,12 @@
+{
+  "directory": "runs/paya-development-refinement-001",
+  "selection_limit": 16384,
+  "final_full_selection": true,
+  "steps": 1600,
+  "batch_size": 512,
+  "evaluate_every": 400,
+  "experiments": [
+    {"name": "refined-interaction-smooth", "head": "interaction", "smoothing": 0.05},
+    {"name": "refined-interaction-weighted-smooth", "head": "interaction", "weighted": true, "smoothing": 0.05}
+  ]
+}
