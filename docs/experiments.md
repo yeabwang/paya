@@ -281,3 +281,33 @@ This prevents silently reusing a bank or result after a configuration change.
 168 local unit tests passed. The completed full-003 model and its metrics still
 belong to the immutable `48754f3` training/evaluation revision; these checks do
 not change its weights or predictions.
+
+### Full-003 result and completion audit
+
+All three epochs completed; selected step 4,797 by full-selection NLL. Native
+validation reproduced that checkpoint's bank score. On the identical historical
+323,944-row test, raw accuracy rose 76.61% -> 76.86%, mean task macro F1
+0.26758 -> 0.37885, AUROC 0.60189 -> 0.67465, NLL 0.74045 -> 0.65148,
+Brier 0.38164 -> 0.34587 and ECE 0.07258 -> 0.02115. This is a small net gain
+of 804 correct QA answers. Accuracy improves in five tasks, macro F1 in twelve.
+Respiratory/sleep-breathing accuracy regresses and rare-class failures remain.
+
+Independent global temperature 1.04831 slightly improved its fitting set but
+slightly worsened all three test probability errors; both raw/calibrated
+variants are retained. No new model was selected from the test results.
+
+The larger paired idle-GPU check (1,300 requests/case, warm text, no signal-feature
+cache) reduced median latency 13.627 -> 11.915 ms, p95 17.082 -> 14.751 ms,
+and p99 18.789 -> 16.209 ms. The noisier 130-request standalone result is
+also preserved. Full launch through evaluation/finalization took 17.09 minutes,
+plus 5.88 minutes for feature-bank preparation using existing frozen features;
+cache/head/loader conditions differ from the earlier 104.8-minute run.
+
+Two scratch GPU paths verified interruption after committed step 100 and
+resumption to 200: final head tensors were identical (maximum difference 0),
+selection history matched and the online run ID was preserved. This did not
+alter full-003. Final W&B test accuracy/F1 and finished state were verified;
+eleven earlier development runs have effective-recipe audit annotations.
+
+See the [full audited report](reports/paya-full-003.md) and its machine-readable
+metrics snapshot for all per-task outcomes, coverage and remaining failures.
