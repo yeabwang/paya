@@ -12,7 +12,7 @@ dependencies = [
   "transformers>=4.51,<5", "PyYAML>=6",
   "scikit-learn>=1.5", "sentencepiece>=0.2",
   "scipy>=1.13", "sentence-transformers>=3,<6",
-  "neurokit2==0.2.12", "mantis-tsfm==1.1.0",
+  "neurokit2==0.2.12", "einops>=0.8,<1", "huggingface-hub>=0.34,<1",
   "wandb>=0.22,<1",
 ]
 
@@ -24,6 +24,9 @@ include = ["paya*"]
 
 [tool.setuptools.dynamic]
 version = {attr = "paya.provenance.PACKAGE_VERSION"}
+
+[tool.setuptools.package-data]
+"paya.vendor" = ["LICENSE", "SOURCE.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

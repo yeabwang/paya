@@ -1,4 +1,4 @@
-"""Prepare native signals, encode with Mantis and score separate candidate answers."""
+"""Prepare native signals, encode with SPOTR and score separate candidate answers."""
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -6,7 +6,7 @@ from pathlib import Path
 import torch
 from torch import nn
 
-from .encoders import EncodedSignal, MantisEncoder
+from .encoders import EncodedSignal, SPOTREncoder
 from .head import DecisionHead
 from .inputs import validate_text
 from .preprocessing import SignalPreprocessor, PreparationConfig, PreparedState
@@ -29,11 +29,11 @@ class DecisionBatch:
 
 
 class PayaModel(nn.Module):
-    """Fuse frozen Mantis signal embeddings with separate BioLORD text embeddings."""
+    """Fuse frozen SPOTR signal embeddings with separate BioLORD text embeddings."""
 
-    def __init__(self, mantis, text_encoder, preparation=None, head=None, asset_identity=None):
+    def __init__(self, spotr, text_encoder, preparation=None, head=None, asset_identity=None):
         super().__init__()
-        self.encoder = mantis.requires_grad_(False).eval()
+        self.encoder = spotr.requires_grad_(False).eval()
         self.head = DecisionHead(**(head or {}))
         self.text_encoder = text_encoder
         self.preprocessor = SignalPreprocessor(preparation)
@@ -47,7 +47,7 @@ class PayaModel(nn.Module):
         sources = verify_assets(assets)
         settings = PreparationConfig(**(preparation or {}))
         text = TextEncoder(device=device, model_path=Path(assets["text"]))
-        model = cls(MantisEncoder.load(assets["mantis"], settings.max_samples), text, settings, head, sources)
+        model = cls(SPOTREncoder.load(assets["spotr"]), text, settings, head, sources)
         return model.to(device)
 
     @property
@@ -101,7 +101,7 @@ class PayaModel(nn.Module):
         with torch.no_grad():
             encoded = self.encoder(encoder_input.to(self.device))
         if encoded.values.ndim != 2 or encoded.values.shape[-1] != 512 or not torch.isfinite(encoded.values).all():
-            raise ValueError("Encoder must return finite Mantis vectors [M,512]")
+            raise ValueError("Encoder must return finite SPOTR global vectors [M,512]")
         intervals = encoded.intervals_s
         if (intervals.shape != (len(encoded.values), 2) or not torch.isfinite(intervals).all()
                 or (intervals[:, 0] < 0).any() or (intervals[:, 1] <= intervals[:, 0]).any()):

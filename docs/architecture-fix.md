@@ -1,15 +1,15 @@
 # Paya architecture
 
-Paya uses frozen MantisV2 and BioLORD-2023 encoders with one trainable decision head. Preprocessing and interval encoding have no learned parameters.
+Paya uses frozen SPOTR Base and BioLORD-2023 encoders with one trainable decision head. Preprocessing and interval encoding have no learned parameters.
 
 ```mermaid
 flowchart TD
     S[Signal + required metadata] --> V[Validate samples, rate, duration and condition]
     V --> C{signal_condition}
     C -->|raw| N[Native-rate NeuroKit cleaning]
-    C -->|processed| F[Native variable-length formatting]
+    C -->|processed| F[Group aligned native channels and form windows]
     N --> F
-    F --> E[Frozen MantisV2]
+    F --> E[Frozen SPOTR Base]
     F --> I[Elapsed start/end seconds]
     E --> H[Trainable shared decision head]
     I --> H
@@ -27,29 +27,36 @@ The public arguments are `state`, `question` and ordered `criteria`. Metadata co
 
 ## Native signal formatting
 
-Use the supplied recording as context. For `N` samples, let `L = 32*floor(N/32)`. If `N=L`, encode `[0,N)` once. Otherwise encode `[0,L)` and `[N-L,N)`. Every sample is covered without resampling, waveform padding or additional normalization. The two overlapping windows represent the same recording, not independent measurements.
+Preserve supplied channel order. Aligned channels with the same native sampling rate and sample count form one multichannel group; different-rate groups are encoded separately. No resampling is performed.
 
-The pinned encoder calculates sample standard deviation in 32 patches. `L=32` gives one observation per patch and nonfinite statistics, so the numerical minimum is `L=64`. Raw NeuroKit filters may impose additional constraints. Sample-count acceptance does not prove that a recording supports the requested physiological inference.
+For up to 12,800 samples, encode the complete group once. Longer groups use contiguous 12,800-sample windows and, when needed, a final complete window ending at the last sample. That last window can overlap its predecessor. This follows pretrained positional capacity, not a physiological duration rule. Every real sample is covered. SPOTR internally normalizes each channel before zero padding to a multiple of 200; intervals describe the unpadded samples.
 
-Equal-length windows are stacked as `[G,1,L]`; different lengths are encoded separately. Each call contains at most `max_samples` waveform measurements. Original embedding order is restored after grouping. Defaults permit 64 channels, 1,000,000 samples per channel and 128 signal embeddings (at most two per channel). These are configurable compute limits, not physiological duration rules.
+Equal-shape windows are stacked as `[G,C,L]`, restoring original embedding order afterward. Each encoder batch contains at most `128*12800` waveform measurements. Defaults permit 128 channels, 1,000,000 samples per channel and 128 global embeddings per request. Each channel needs at least two samples for the upstream sample standard deviation; raw filters may require more. These bounds do not establish suitability for a question.
 
 ## Frozen encoders
 
-`B` is request batch size; `M` is the maximum number of signal embeddings per request; `K` is the maximum candidate count; `S=K+1` counts the question and candidates. `G` counts equal-length windows in an encoder call.
+`B` is request batch size; `M` is the maximum number of signal embeddings per request; `K` is the maximum candidate count; `S=K+1` counts the question and candidates. `G` counts equal-shape windows, `C` channels, and `N=2*ceil(L/200)` temporal patches.
 
-### MantisV2
+### SPOTR Base
 
-Use transformer layer index 2, concatenating CLS and mean patch embeddings. Frozen model internals retain their original normalization and statistics operations.
+The pinned checkpoint has width 512, patch size 100, eight attention heads and 12 transformer blocks. Its official downstream representation is the global token `tokens[:,0]`. The vendored encoder preserves upstream forward operations and checkpoint keys; decoder and downstream classifiers are excluded.
 
 | Operation | Input | Output |
 | --- | --- | --- |
-| Waveform/difference/statistics token generator | `[G,1,L]` | `[G,32,256]` |
-| Append CLS | `[G,32,256]` | `[G,33,256]` |
-| Three transformer blocks | `[G,33,256]` | `[G,33,256]` |
-| Concatenate CLS and mean patch embedding | `[G,33,256]` | `[G,512]` |
+| Per-channel z-score, then internal zero padding | `[G,C,L]` | `[G,C,200*ceil(L/200)]` |
+| Conv2D 1→32, kernel 1×25, padding 12; LayerNorm2D + GELU | `[G,1,C,100N]` | `[G,32,C,100N]` |
+| Conv2D 32→512, kernel/stride 1×100; LayerNorm2D + GELU | `[G,32,C,100N]` | `[G,512,C,N]` |
+| Rearrange and add learned channel/time positions | `[G,512,C,N]` | `[G,C,N,512]` |
+| Self-attention across time, residual, mean over time | `[G*C,N,512]` | `[G,C,512]` |
+| Self-attention across channels, residual, mean over channels | `[G*N,C,512]` | `[G,N,512]` |
+| Prepend global token and concatenate both sequences | `[G,C,512]`, `[G,N,512]` | `[G,1+C+N,512]` |
+| Twelve pre-RMSNorm self-attention / gated feed-forward blocks | `[G,1+C+N,512]` | `[G,1+C+N,512]` |
+| Select global token | `[G,1+C+N,512]` | `[G,512]` |
 | Pack embeddings and their elapsed intervals | Variable window groups | `[B,M,512]`, `[B,M,2]`, mask `[B,M]` |
 
-Each block uses RMSNorm, rotary self-attention with eight heads of width 32 and a gated feed-forward layer, with residual additions. There is no output-width adapter. Changing input length changes the encoder's pooling scale; representation quality across lengths needs evaluation.
+Each attention head has width 64. Transformer feed-forward layers use separate gate/up projections 512→2048, SiLU gating, and a 2048→512 down projection, with residual additions. No output-width adapter is needed. Learned channel positions make supplied channel order significant.
+
+Published downstream processing uses 200 Hz and a 50/60 Hz notch; Paya preserves declared native rates and applies a notch only when requested. The paper evaluates EEG, iEEG, ECG and PPG, so acceptance of the nine API signal types does not establish pretrained coverage. Internal z-scoring removes absolute level and scale: absolute temperature or voltage cannot be recovered from normalized embeddings alone. Native-rate accuracy, these modalities and calibration require independent outcome evaluation.
 
 ### BioLORD-2023
 
@@ -74,7 +81,7 @@ The default head has width 256, two residual blocks, four attention heads of wid
 | Final LayerNorm and shared candidate scorer | `[B,K,256]` | `[B,K]` logits |
 | Masked softmax after division by fitted temperature | `[B,K]` | `[B,K]` probabilities |
 
-Dropout defaults to 0.1. The interval encoding allocates half its dimensions to each endpoint, measured from the recording start in seconds. Adding time to values preserves time information even with a single signal token; adding it only to keys would have no effect in that case. There are no wavelet-scale or CLS/frame coordinates. Padding is masked at the head and never enters a frozen signal encoder.
+Dropout defaults to 0.1. The interval encoding allocates half its dimensions to each endpoint, measured from the recording start in seconds. Adding time to values preserves time information even with a single signal token; adding it only to keys would have no effect in that case. There are no wavelet-scale or CLS/frame coordinates. Batch padding is added after signal encoding and masked at the head; SPOTR's internal waveform padding follows its pretrained forward pass.
 
 Choice is the highest-probability criterion; ties use criterion text as a deterministic key. Probabilities retain input order, and confidence is the chosen probability. Calibration describes groups of predictions and does not guarantee that an individual answer is correct.
 
@@ -84,4 +91,4 @@ Only the decision head is optimized with candidate cross-entropy. Selection NLL 
 
 [paya/provenance.py](../paya/provenance.py) defines unchanged Paya `v1` version identifiers and pinned upstream revisions. Structural identities distinguish variable-length formatting and elapsed-interval attention. Caches, checkpoints and exports require matching identities; no compatibility path loads retired architectures. See [training](training.md).
 
-Sources: [Mantis implementation](https://github.com/vfeofanov/mantis), [MantisV2 paper](https://arxiv.org/abs/2602.17868), [BioLORD](https://huggingface.co/FremyCompany/BioLORD-2023), [NeuroKit](https://neuropsychology.github.io/NeuroKit/).
+Sources: [SPOTR implementation](https://github.com/5GYYYYY/SPOTR), [checkpoint](https://huggingface.co/5gyyyyy/SPOTR), [SPOTR paper](https://arxiv.org/abs/2606.21973), [BioLORD](https://huggingface.co/FremyCompany/BioLORD-2023), [NeuroKit](https://neuropsychology.github.io/NeuroKit/).

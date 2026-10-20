@@ -73,6 +73,21 @@ def test_feature_cache_hit_skips_formatting_and_binds_condition_and_rate(model, 
         assert "expert" not in payload["binding"]
 
 
+def test_channel_order_is_bound_to_prepared_and_cached_features(model, tmp_path):
+    request = state(condition="processed")
+    request["signals"].append(state("ppg", condition="processed")["signals"][0])
+    first = model.preprocessor.prepare(request)
+    request["signals"].reverse()
+    second = model.preprocessor.prepare(request)
+    assert first.identity != second.identity
+    assert [c.sensor_type for c in first.channels] == ["ecg", "ppg"]
+    assert [c.sensor_type for c in second.channels] == ["ppg", "ecg"]
+    cache = FeatureCache(tmp_path)
+    cache.get_or_encode(model, first)
+    cache.get_or_encode(model, second)
+    assert len(list(tmp_path.glob("*.pt"))) == 2
+
+
 def test_checkpoint_rejects_a_different_text_and_position_contract(model, tmp_path):
     path = tmp_path/"incompatible.pt"
     save_checkpoint(path, model)
@@ -80,7 +95,7 @@ def test_checkpoint_rejects_a_different_text_and_position_contract(model, tmp_pa
     payload["identity"]["architecture"]["text_roles"].append("ending")
     payload["identity"]["architecture"]["signal_position"] = "time-scale-cls"
     torch.save(payload, path)
-    with pytest.raises(ValueError, match="Mantis"):
+    with pytest.raises(ValueError, match="SPOTR"):
         load_checkpoint(path, model)
 
 
@@ -106,7 +121,7 @@ def test_checkpoint_roundtrip_rejects_incompatible_head_and_preserves_output(mod
     assert set(payload["learned"]) == {"head"}
     assert "encoder" not in payload
     torch.save({"contract": "unrecognized", "head": {}}, tmp_path/"invalid.pt")
-    with pytest.raises(ValueError, match="Mantis"):
+    with pytest.raises(ValueError, match="SPOTR"):
         load_checkpoint(tmp_path/"invalid.pt", other)
 
 
@@ -143,7 +158,7 @@ def test_outcome_temperature_is_bound_to_decision_head(model, tmp_path):
 def test_bundle_roundtrip_and_integrity_with_tiny_asset_doubles(model, tmp_path, monkeypatch):
     import paya.export as module
     assets = {}
-    for name in ("mantis", "text"):
+    for name in ("spotr", "text"):
         root = tmp_path/name; root.mkdir()
         (root/"weights.txt").write_text(name, encoding="utf-8")
         assets[name] = root
@@ -156,7 +171,7 @@ def test_bundle_roundtrip_and_integrity_with_tiny_asset_doubles(model, tmp_path,
     assert loaded.predict(state(), "q", ["a", "b"]) == model.predict(state(), "q", ["a", "b"])
     with pytest.raises(FileExistsError):
         export_bundle(model, assets, root)
-    (root/"mantis"/"weights.txt").write_text("modified", encoding="utf-8")
+    (root/"spotr"/"weights.txt").write_text("modified", encoding="utf-8")
     with pytest.raises(ValueError, match="checksum"):
         load_bundle(root)
 

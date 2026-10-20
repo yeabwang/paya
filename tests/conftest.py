@@ -51,7 +51,7 @@ class EncoderDouble(nn.Module):
 
     def forward(self, encoder_input):
         self.calls += 1
-        values = self.base(torch.stack([frame.mean(-1) for frame in encoder_input.frames]))
+        values = self.base(torch.stack([frame.mean().reshape(1) for frame in encoder_input.frames]))
         return EncodedSignal(values, encoder_input.intervals_s)
 
 

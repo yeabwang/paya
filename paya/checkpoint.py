@@ -45,7 +45,7 @@ def save_checkpoint(path, model, training=None):
 def load_checkpoint(path, model):
     payload = torch.load(path, map_location="cpu", weights_only=True)
     if payload.get("contract") != RUNTIME_CONTRACT or payload.get("identity") != model.identity():
-        raise ValueError("Checkpoint is not the exact current Mantis architecture/assets/preparation")
+        raise ValueError("Checkpoint is not the exact current SPOTR architecture/assets/preparation")
     if set(payload.get("learned", {})) != {"head"}:
         raise ValueError("Checkpoint must contain only decision-head weights")
     model.head.load_state_dict(payload["learned"]["head"], strict=True)

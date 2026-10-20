@@ -1,6 +1,6 @@
 # Signal preparation
 
-`validate → clean raw channels only → native variable-length formatting → frozen MantisV2`
+`validate → clean raw channels only → group aligned native channels → frozen SPOTR`
 
 ## Input contract
 
@@ -13,7 +13,7 @@ Each physical channel contains a one-dimensional `samples` array and `metadata`:
 | `duration_s` | Required finite positive number matching `sample_count / sampling_rate_hz` |
 | `signal_condition` | `raw` by default, or `processed` |
 
-Samples must be finite and representable in float32. Their supplied amplitude scale is retained; unit conversion and lead handling are absent. Channels must describe the same interval. Mixed native rates require matching explicit `start_time_s` values. Optional timestamps must match the declared uniform rate.
+Samples must be finite and representable in float32. Preprocessing retains their supplied amplitude scale; unit conversion and lead handling are absent. Channels must describe the same interval. Mixed native rates require matching explicit `start_time_s` values. Optional timestamps must match the declared uniform rate. Supplied channel order is preserved for SPOTR's learned channel positions.
 
 ## Raw NeuroKit processing
 
@@ -34,24 +34,24 @@ Optional electrical `powerline_hz` accepts numeric `0`, `50` or `60`; no frequen
 
 ## Processed signals
 
-`signal_condition: processed` skips all NeuroKit cleaning, peak detection and quality calculations. Validation and native window alignment still run. Provided samples are unchanged apart from float32 representation. Mantis retains its own frozen normalization and patch-statistics operations.
+`signal_condition: processed` skips all NeuroKit cleaning, peak detection and quality calculations. Validation, grouping and window formation still run. Provided samples enter SPOTR unchanged apart from float32 representation; its own pretrained normalization and internal padding apply to both raw and processed inputs.
 
-## Native window alignment
+## Native grouping and windows
 
-Use the supplied recording as context, without a fixed physiological window duration. Let `L=32*floor(N/32)` for a channel with `N` samples. Encode the complete array once when aligned; otherwise encode the length-`L` prefix and suffix. This covers all real measurements without resampling, interpolation, amplitude normalization or external sample padding.
+Aligned channels with the same rate and sample count form one `[C,L]` group. Different rates remain separate groups. Encode each group once when `L<=12800`. Longer groups use complete 12,800-sample windows, with a final overlapping window ending at the last measurement when necessary. This covers every sample without resampling or external padding. The limit follows the checkpoint's 128 temporal positions and 100-sample patches; it is not a fixed physiological duration.
 
 | Recording | Encoder windows | Elapsed intervals |
 | --- | --- | --- |
-| 10 s at 125 Hz, 1,250 samples | Two × 1,248 samples | `[0,9.984]`, `[0.016,10]` seconds |
-| 6 s at 65 Hz, 390 samples | Two × 384 samples | `[0,384/65]`, `[6/65,6]` seconds |
-| 8 s at 64 Hz, 512 samples | One × 512 samples | `[0,8]` seconds |
+| 10 s at 125 Hz, 1,250 samples | One × 1,250 samples | `[0,10]` seconds |
+| 6 s at 65 Hz, 390 samples | One × 390 samples | `[0,6]` seconds |
+| 100 s at 200 Hz, 20,000 samples | Two × 12,800 samples | `[0,64]`, `[36,100]` seconds |
 
-Numerical validity requires at least 64 native measurements: the frozen model computes sample standard deviation in 32 patches and needs two observations per patch. This is not a physiological minimum. Defaults cap each channel at 1,000,000 samples and each request at 64 channels/128 embeddings. Equal-length encoder batches are bounded by the configured sample budget. No recording is shortened to fit a budget; over-budget requests fail explicitly.
+SPOTR z-scores each channel using its real samples, then pads internally with zeros to a multiple of 200. The numerical minimum is two samples because the upstream standard deviation uses sample correction. At most 128 channels enter a group. Defaults cap each channel at 1,000,000 samples and each request at 128 channels/128 global embeddings. Equal-shape batches contain at most `128*12800` waveform measurements. Over-budget requests fail explicitly.
 
 ## Physiological scope
 
-The recording duration remains available through elapsed start/end encoding. Normalized coordinates alone would discard physical time scale. All supplied context is represented, although the frozen encoder still compresses it into 32 patches.
+The recording duration remains available through elapsed start/end encoding. One 512-dimensional global token represents each group/window. SPOTR's z-score removes absolute level and amplitude: preserving temperature or voltage during cleaning does not preserve it through this encoder. Questions requiring those quantities cannot rely on these normalized embeddings alone.
 
-Acceptance does not establish suitability for every question. Pulse shape, pulse rate, respiration and HRV require different evidence and durations. NeuroKit, for example, recommends minutes of high-quality data for several frequency-domain HRV measures. Short recordings are not extended to pretend that this information exists. Generalization and calibration need evaluation by task, duration, rate and domain.
+Acceptance does not establish suitability for every question. Pulse shape, pulse rate, respiration and HRV require different evidence and durations. NeuroKit recommends minutes of high-quality data for several frequency-domain HRV measures. SPOTR's published downstream pipeline uses 200 Hz and evaluates EEG, iEEG, ECG and PPG. Paya keeps the user's native rate and nine-type input contract; generalization and calibration must be evaluated by task, duration, rate and domain.
 
-References: [Mantis data format](https://github.com/vfeofanov/mantis#prepare-data), [NeuroKit custom processing](https://neuropsychology.github.io/NeuroKit/examples/bio_custom/bio_custom.html), [PPG](https://neuropsychology.github.io/NeuroKit/functions/ppg.html), [HRV duration requirements](https://neuropsychology.github.io/NeuroKit/functions/hrv.html#hrv-frequency).
+References: [SPOTR implementation](https://github.com/5GYYYYY/SPOTR), [SPOTR paper](https://arxiv.org/abs/2606.21973), [NeuroKit custom processing](https://neuropsychology.github.io/NeuroKit/examples/bio_custom/bio_custom.html), [HRV duration requirements](https://neuropsychology.github.io/NeuroKit/functions/hrv.html#hrv-frequency).

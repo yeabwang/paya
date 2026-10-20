@@ -1,0 +1,13 @@
+{
+  "model_id": "5gyyyyy/SPOTR",
+  "revision": "5a963ffaca341c6d875c69713133de526f6b905b",
+  "implementation_revision": "57b3c9f47cc7d20bc9852b84df9545f1dbb887f6",
+  "upstream_checkpoint": "SPOTREncoder.pt",
+  "upstream_sha256": "94ac49b21c9e22391fe8eb2869a057b1c3ddf776497b16e5e91491e4e1dbdbea",
+  "files": {
+    "model.safetensors": "93d9f05ad1727b07c1c15e296e22984042b5ada352e2849b0b2208ef462871d4",
+    "config.json": "37dc200a2a94c4de106bf43649646d9dee3adbe39de5c8ba1ff003803e393e60",
+    "README.md": "573d28c4ade7a492b270565330b37941e067bedc9d66d15e304b342a2766cf6e",
+    "LICENSE": "e324b5d8d08d67637e700014bd25bdb08f85f985fa6267d2dc4ec191fce5478e"
+  }
+}

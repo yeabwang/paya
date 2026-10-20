@@ -3,7 +3,7 @@ import pytest
 import torch
 
 from paya.inputs import TYPES, validate_state, validate_text, UnsupportedSignalError
-from paya.preprocessing import SignalPreprocessor, PreparationConfig, native_windows
+from paya.preprocessing import SignalPreprocessor, PreparationConfig, spotr_windows
 from conftest import state
 
 
@@ -52,13 +52,13 @@ def test_native_preparations_for_all_nine_signals(kind):
     rate = {"temperature": 1, "eda": 4, "ppg": 73, "accelerometer": 123,
             "gyroscope": 80, "respiration": 32, "emg": 250}.get(kind, 360)
     processor = SignalPreprocessor()
-    prepared = processor.prepare(state(kind, rate, max(6, 64/rate)))
+    prepared = processor.prepare(state(kind, rate, 16))
     channel = prepared.channels[0]
     assert channel.rate == rate and channel.metadata["signal_condition"] == "raw"
     frames = processor.format(prepared)
     assert frames.intervals_s.shape == (len(frames.frames), 2)
     for frame in frames.frames:
-        assert frame.shape[0] == 1 and frame.shape[1] >= 64 and frame.shape[1] % 32 == 0
+        assert frame.shape[0] == 1 and 2 <= frame.shape[1] <= 12800
         assert frame.dtype == torch.float32 and torch.isfinite(frame).all()
     torch.testing.assert_close(frames.frames[0][0], torch.from_numpy(channel.samples[:frames.frames[0].shape[1]]), atol=0, rtol=0)
     torch.testing.assert_close(frames.intervals_s[-1, 1], torch.tensor(len(channel.samples)/rate))
@@ -94,9 +94,8 @@ def test_processed_channels_bypass_entire_neurokit_pipeline(kind, monkeypatch):
     np.testing.assert_array_equal(prepared.channels[0].samples, supplied)
     assert prepared.audit["quality"][0]["cleaning"] == "skipped"
     frames = processor.format(prepared)
-    assert [tuple(frame.shape) for frame in frames.frames] == [(1, 576), (1, 576)]
-    np.testing.assert_array_equal(frames.frames[0][0], supplied[:576])
-    np.testing.assert_array_equal(frames.frames[1][0], supplied[-576:])
+    assert [tuple(frame.shape) for frame in frames.frames] == [(1, 600)]
+    np.testing.assert_array_equal(frames.frames[0][0], supplied)
 
 
 def test_raw_is_default_and_mixed_conditions_clean_only_raw_channels(monkeypatch):
@@ -116,16 +115,17 @@ def test_raw_is_default_and_mixed_conditions_clean_only_raw_channels(monkeypatch
                                   np.asarray(request["signals"][1]["samples"], dtype=np.float32))
 
 
-@pytest.mark.parametrize("rate,duration,length,starts", [
-    (125, 10, 1248, [0, 2]), (65, 6, 384, [0, 6]), (64, 8, 512, [0]),
-    (1, 64, 64, [0]), (123.5, 10, 1216, [0, 19]),
+@pytest.mark.parametrize("rate,count,starts", [
+    (125, 1250, [0]), (65, 390, [0]), (1, 2, [0]), (123.5, 1235, [0]),
+    (200, 12800, [0]), (200, 12801, [0, 1]), (200, 25601, [0, 12800, 12801]),
 ])
-def test_native_full_context_coverage_without_resampling_or_padding(rate, duration, length, starts):
+def test_spotr_native_coverage_without_resampling_or_external_padding(rate, count, starts):
     processor = SignalPreprocessor()
-    request = state("ppg", rate, duration, condition="processed")
+    request = state("ppg", rate, count/rate, condition="processed")
     prepared = processor.prepare(request)
     frames = processor.format(prepared)
     samples = prepared.channels[0].samples
+    length = min(count, 12800)
     assert [tuple(frame.shape) for frame in frames.frames] == [(1, length)]*len(starts)
     coverage = np.zeros(len(samples), dtype=bool)
     for index, (start, frame) in enumerate(zip(starts, frames.frames)):
@@ -133,28 +133,53 @@ def test_native_full_context_coverage_without_resampling_or_padding(rate, durati
         coverage[start:start+length] = True
         torch.testing.assert_close(frames.intervals_s[index], torch.tensor([start/rate, (start+length)/rate]))
     assert coverage.all()
-    assert frames.intervals_s[0, 0] == 0 and frames.intervals_s[-1, 1] == duration
+    torch.testing.assert_close(frames.intervals_s[-1, 1], torch.tensor(count/rate))
 
 
 @pytest.mark.parametrize("length", [2, 31, 32, 33, 63])
-def test_actual_encoder_minimum_is_checked_before_neurokit(length, monkeypatch):
+def test_processed_short_signals_follow_spotr_normalization_minimum(length, monkeypatch):
     import paya.preprocessing as module
     def unexpected(*args, **kwargs):
-        pytest.fail("Numerically unsupported input must fail before cleaning")
+        pytest.fail("Processed inputs must skip NeuroKit")
     monkeypatch.setattr(module, "clean_channel", unexpected)
-    with pytest.raises(UnsupportedSignalError, match="64 native samples"):
-        SignalPreprocessor().prepare(state("ppg", 1, length))
+    prepared = SignalPreprocessor().prepare(state("ppg", 1, length, condition="processed"))
+    frames = SignalPreprocessor().format(prepared)
+    assert [tuple(frame.shape) for frame in frames.frames] == [(1, length)]
 
 
-def test_all_alignment_remainders_cover_the_original_recording():
-    for count in range(64, 257):
-        intervals = native_windows(count)
+def test_capacity_windows_cover_short_boundary_and_long_recordings():
+    for count in (2, 3, 199, 200, 201, 12799, 12800, 12801, 25600, 25601, 50000):
+        intervals = spotr_windows(count)
         coverage = np.zeros(count, dtype=bool)
-        assert len(intervals) == (1 if count % 32 == 0 else 2)
         for start, end in intervals:
-            assert end-start >= 64 and (end-start) % 32 == 0
+            assert 2 <= end-start <= 12800
             coverage[start:end] = True
         assert coverage.all()
+    with pytest.raises(UnsupportedSignalError, match="two native samples"):
+        spotr_windows(1)
+
+
+def test_aligned_channels_share_a_window_and_preserve_supplied_order():
+    request = state("ppg", 125, 10, condition="processed")
+    request["signals"].append(state("ecg", 125, 10, condition="processed")["signals"][0])
+    request["signals"][0]["samples"] = [2.0]*1250
+    request["signals"][1]["samples"] = [3.0]*1250
+    prepared = SignalPreprocessor().prepare(request)
+    frames = SignalPreprocessor().format(prepared)
+    assert [c.sensor_type for c in prepared.channels] == ["ppg", "ecg"]
+    assert len(frames.frames) == 1 and frames.frames[0].shape == (2, 1250)
+    torch.testing.assert_close(frames.frames[0][:, 0], torch.tensor([2., 3.]))
+
+
+def test_different_native_rates_stay_in_separate_spotr_groups():
+    request = state("ecg", 200, 10, condition="processed")
+    request["signals"].append(state("ppg", 125, 10, condition="processed")["signals"][0])
+    for channel in request["signals"]:
+        channel["metadata"]["start_time_s"] = 0
+    prepared = SignalPreprocessor().prepare(request)
+    frames = SignalPreprocessor().format(prepared)
+    assert [tuple(frame.shape) for frame in frames.frames] == [(1, 2000), (1, 1250)]
+    torch.testing.assert_close(frames.intervals_s, torch.tensor([[0., 10.], [0., 10.]]))
 
 
 
@@ -211,14 +236,16 @@ def test_frame_budget_is_checked_before_neurokit(monkeypatch):
         pytest.fail("Over-budget requests must fail before cleaning")
     monkeypatch.setattr(module, "clean_channel", unexpected)
     with pytest.raises(UnsupportedSignalError, match="budget"):
-        SignalPreprocessor(PreparationConfig(max_signal_tokens=1)).prepare(state())
+        SignalPreprocessor(PreparationConfig(max_signal_tokens=1)).prepare(state("ecg", 500, 30))
     with pytest.raises(ValueError):
         PreparationConfig(max_signal_tokens=0)
 
 
-def test_sample_budget_must_allow_the_actual_encoder_minimum():
-    with pytest.raises(ValueError, match="64 native samples"):
-        PreparationConfig(max_samples=63)
+def test_budgets_respect_spotr_actual_capacity():
+    with pytest.raises(ValueError, match="128 channels"):
+        PreparationConfig(max_channels=129)
+    with pytest.raises(ValueError, match="two samples"):
+        PreparationConfig(max_samples=1)
 
 
 @pytest.mark.parametrize("question,criteria", [("", ["a", "b"]), ("q", ["a"]),

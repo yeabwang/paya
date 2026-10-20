@@ -7,27 +7,32 @@ from pathlib import Path
 PACKAGE_VERSION = "1.0.0"
 VERSION = f"v{PACKAGE_VERSION.split('.')[0]}"
 INPUT_SCHEMA_VERSION = int(VERSION[1:])
-RUNTIME_CONTRACT = f"paya-mantis-decision-{VERSION}"
-PREPARATION_CONTRACT = f"mantis-native-raw-or-processed-{VERSION}"
+RUNTIME_CONTRACT = f"paya-spotr-decision-{VERSION}"
+PREPARATION_CONTRACT = f"spotr-native-raw-or-processed-{VERSION}"
 NATIVE_CONTRACT = f"wearable-native-no-unit-conversion-{VERSION}"
-CACHE_CONTRACT = f"mantis-native-fp32-intervals-{VERSION}"
+CACHE_CONTRACT = f"spotr-global-fp32-intervals-{VERSION}"
 TEXT_CONTRACT = f"biolord-separate-text-{VERSION}"
 
-MANTIS_ID = "paris-noah/MantisV2"
-MANTIS_REVISION = "8f6ca35cb54ab14b120618943c6fca5ddf5a76a6"
-MANTIS_IMPLEMENTATION = "mantis-tsfm==1.1.0"
+SPOTR_ID = "5gyyyyy/SPOTR"
+SPOTR_REVISION = "5a963ffaca341c6d875c69713133de526f6b905b"
+SPOTR_CODE_REVISION = "57b3c9f47cc7d20bc9852b84df9545f1dbb887f6"
+SPOTR_CHECKPOINT_SHA256 = "94ac49b21c9e22391fe8eb2869a057b1c3ddf776497b16e5e91491e4e1dbdbea"
+SPOTR_CONFIG = {"encoder_dim": 512, "patch_size": 100, "num_heads": 8, "n_layers": 12}
+SPOTR_MAX_CHANNELS = 128
+SPOTR_MAX_SAMPLES = 12800
 TEXT_ID = "FremyCompany/BioLORD-2023"
 TEXT_REVISION = "167aab527b238a50ca65224e6319215d2ff4fc9f"
 TEXT_IDENTITY = {"contract": TEXT_CONTRACT, "model_id": TEXT_ID, "revision": TEXT_REVISION,
                  "pooling": "sentence-transformers-default", "normalize": True, "dimension": 768}
 
-ARCHITECTURE = {"signal_encoder": MANTIS_ID,
+ARCHITECTURE = {"signal_encoder": SPOTR_ID, "encoder_code_revision": SPOTR_CODE_REVISION,
                 "pipeline": ["validate", "clean_raw_only", "native_framing", "frozen_encoding", "decision_head"],
                 "signal_width": 512, "sampling": "declared-native-rate",
-                "framing": "full-context-prefix-suffix-32", "minimum_samples": 64,
+                "framing": "native-aligned-channel-groups-capacity-windows", "minimum_samples": 2,
+                "channel_order": "as-supplied", "signal_output": "global-token",
+                "encoder_config": SPOTR_CONFIG,
                 "required_metadata": ["sensor_type", "sampling_rate_hz", "duration_s"],
                 "signal_condition": {"values": ["raw", "processed"], "default": "raw"},
-                "mantis_layer": 2, "mantis_output": "combined",
                 "text_processing": f"{TEXT_CONTRACT}-normalized-mean-128",
                 "text_roles": ["question", "candidate"], "signal_position": "elapsed-start-end-sinusoidal-keys-values",
                 "input_schema": INPUT_SCHEMA_VERSION,
@@ -73,7 +78,7 @@ def verify_source(directory, model_id, revision):
 
 
 def verify_assets(assets):
-    expected = {"mantis": (MANTIS_ID, MANTIS_REVISION), "text": (TEXT_ID, TEXT_REVISION)}
+    expected = {"spotr": (SPOTR_ID, SPOTR_REVISION), "text": (TEXT_ID, TEXT_REVISION)}
     if set(assets) != set(expected):
-        raise ValueError("Specify exactly mantis and text asset directories")
+        raise ValueError("Specify exactly spotr and text asset directories")
     return {name: verify_source(assets[name], *spec) for name, spec in expected.items()}

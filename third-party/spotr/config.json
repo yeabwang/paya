@@ -1,0 +1,6 @@
+{
+  "encoder_dim": 512,
+  "patch_size": 100,
+  "num_heads": 8,
+  "n_layers": 12
+}

@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import torch
 
-from paya.encoders import MantisEncoder
+from paya.encoders import SPOTREncoder
 from paya.head import DecisionHead
 from paya.train import choice_loss
 from conftest import state
@@ -25,7 +25,7 @@ def test_layer_shapes_and_separate_text_encoding(model):
     assert model.head.roles.shape == (2, 256) and "ending" not in vars(batch)
     assert set(result) == {"logits", "criteria_mask"} and result["logits"].shape == (1, 3)
     assert seen["text_input"][0] == ((1, 4, 768), (1, 4, 256))
-    assert seen["key"][0] == ((1, 2, 512), (1, 2, 256))
+    assert seen["key"][0] == ((1, 1, 512), (1, 1, 256))
     assert seen["ff"][0] == ((1, 4, 256), (1, 4, 1024))
     assert seen["scorer"][0] == ((1, 3, 256), (1, 3, 1))
 
@@ -53,10 +53,10 @@ def test_stage_order_native_preparation_then_framing_and_encoding(model, monkeyp
         return original_format(prepared)
     monkeypatch.setattr(module, "clean_channel", clean)
     monkeypatch.setattr(model.preprocessor, "format", format_signal)
-    hook = model.encoder.register_forward_pre_hook(lambda *_: events.append("mantis"))
+    hook = model.encoder.register_forward_pre_hook(lambda *_: events.append("spotr"))
     model.predict(state(condition=condition), "Question?", ["a", "b"])
     hook.remove()
-    assert events == (["neurokit"] if condition == "raw" else []) + ["format", "mantis"]
+    assert events == (["neurokit"] if condition == "raw" else []) + ["format", "spotr"]
 
 
 def test_prepared_signal_reuse_and_mixed_native_rates(model, monkeypatch):
@@ -76,12 +76,11 @@ def test_prepared_signal_reuse_and_mixed_native_rates(model, monkeypatch):
         np.testing.assert_array_equal(channel.samples, original)
 
 
-def test_candidate_channel_permutation_and_audit_invariance(model):
+def test_candidate_permutation_and_audit_invariance(model):
     criteria = ["slow", "normal", "fast"]
     request = state()
     request["signals"].append(state("ppg", 500)["signals"][0])
     first = model.predict(request, "Which category?", criteria)
-    request["signals"].reverse()
     request["dataset_id"] = "audit only"
     request["signals"][0]["metadata"]["subject_id"] = "audit only"
     second = model.predict(request, "Which category?", criteria)
@@ -116,12 +115,17 @@ def test_encoder_wrapper_keeps_native_windows_and_times():
     from paya.preprocessing import SignalPreprocessor
     class Core(nn.Module):
         def forward(self, x):
-            return x.mean(-1).expand(-1, 512)
+            batch, channels, length = x.shape
+            tokens = torch.zeros(batch, 1+channels+2*((length+199)//200), 512)
+            tokens[:, 0] = x.mean((1, 2))[:, None]
+            tokens[:, 1:] = 100
+            return tokens
     processor = SignalPreprocessor()
     prepared = processor.prepare(state())
     frames = processor.format(prepared)
-    encoded = MantisEncoder(Core())(frames)
-    assert encoded.values.shape == (2, 512) and encoded.intervals_s.shape == (2, 2)
+    encoded = SPOTREncoder(Core())(frames)
+    assert encoded.values.shape == (1, 512) and encoded.intervals_s.shape == (1, 2)
+    torch.testing.assert_close(encoded.values[0], frames.frames[0].mean().expand(512))
     torch.testing.assert_close(encoded.intervals_s, frames.intervals_s)
 
 
@@ -185,21 +189,22 @@ def test_head_ignores_padding_and_preserves_signal_interval_pairs():
     assert padded[0, 2].isneginf()
 
 
-@pytest.mark.parametrize("budget", [128, 256])
-def test_encoder_groups_equal_lengths_bounds_batches_and_restores_order(budget):
+def test_encoder_groups_equal_shapes_bounds_batches_and_restores_order():
     from torch import nn
     from paya.preprocessing import EncoderInput
     seen = []
     class Core(nn.Module):
         def forward(self, x):
             seen.append(tuple(x.shape))
-            return x.mean(-1).expand(-1, 512)
-    frames = [torch.full((1, n), float(i)) for i, n in enumerate([128, 64, 128])]
-    intervals = torch.tensor([[0., 2.], [0., 1.], [2., 4.]])
-    result = MantisEncoder(Core(), max_batch_samples=budget)(EncoderInput(frames, intervals))
-    assert all(batch*length <= budget and channels == 1 for batch, channels, length in seen)
-    assert len(seen) == (3 if budget == 128 else 2)
-    torch.testing.assert_close(result.values[:, 0], torch.tensor([0., 1., 2.]))
+            batch, channels, length = x.shape
+            return x.mean((1, 2))[:, None, None].expand(batch, 1+channels+2*((length+199)//200), 512)
+    shapes = [(128, 12800), (1, 201), (128, 12800), (2, 201), (1, 201)]
+    frames = [torch.full(shape, float(i)) for i, shape in enumerate(shapes)]
+    intervals = torch.tensor([[float(i), float(i+1)] for i in range(len(frames))])
+    result = SPOTREncoder(Core())(EncoderInput(frames, intervals))
+    assert all(batch*channels*length <= 128*12800 for batch, channels, length in seen)
+    assert seen == [(1, 128, 12800), (1, 128, 12800), (2, 1, 201), (1, 2, 201)]
+    torch.testing.assert_close(result.values[:, 0], torch.arange(5, dtype=torch.float32))
     torch.testing.assert_close(result.intervals_s, intervals)
 
 
@@ -221,4 +226,34 @@ def test_encoder_rejects_invalid_interval_before_running_frozen_weights():
         def forward(self, x):
             pytest.fail("Invalid intervals must fail before frozen encoding")
     with pytest.raises(ValueError, match="intervals"):
-        MantisEncoder(Core())(EncoderInput([torch.zeros(1, 64)], torch.tensor([[1., 0.]])))
+        SPOTREncoder(Core())(EncoderInput([torch.zeros(1, 2)], torch.tensor([[1., 0.]])))
+
+
+@pytest.mark.parametrize("shape", [(0, 200), (129, 200), (1, 1), (1, 12801), (200,)])
+def test_encoder_rejects_inputs_outside_pretrained_capacity(shape):
+    from torch import nn
+    from paya.preprocessing import EncoderInput
+    class Core(nn.Module):
+        def forward(self, x):
+            pytest.fail("Invalid waveform shape must fail before frozen encoding")
+    with pytest.raises(ValueError, match="SPOTR expects"):
+        SPOTREncoder(Core())(EncoderInput([torch.zeros(shape)], torch.tensor([[0., 1.]])))
+
+
+@pytest.mark.parametrize("channels,length", [(1, 2), (2, 199), (3, 200), (2, 201), (1, 12800)])
+def test_spotr_core_native_normalization_padding_and_shapes(channels, length):
+    from paya.vendor.spotr import SPOTREncoder as Core
+    core = Core(encoder_dim=16, num_heads=8, n_layers=1).eval()
+    x = torch.randn(1, channels, length)
+    with torch.no_grad():
+        tokens, normalized = core.encode(x)
+        shifted = core(x+100)
+        constant = core(torch.full_like(x, 37))
+    padded = 200*((length+199)//200)
+    assert tokens.shape == (1, 1+channels+padded//100, 16)
+    assert normalized.shape == (1, channels, padded)
+    expected = (x-x.mean(-1, keepdim=True))/(x.std(-1, keepdim=True)+1e-6)
+    torch.testing.assert_close(normalized[..., :length], expected)
+    assert (normalized[..., length:] == 0).all()
+    torch.testing.assert_close(shifted, tokens, atol=2e-5, rtol=2e-5)
+    assert torch.isfinite(constant).all()

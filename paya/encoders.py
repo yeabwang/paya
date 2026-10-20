@@ -1,60 +1,64 @@
-"""Frozen MantisV2 embeddings from native windows with elapsed interval times."""
+"""Frozen SPOTR global tokens from native multichannel recordings."""
 
 from dataclasses import dataclass
+import json
+from pathlib import Path
 
 import torch
 from torch import nn
+from safetensors.torch import load_file
 
-from .provenance import MANTIS_ID, MANTIS_REVISION, verify_source
+from .provenance import SPOTR_ID, SPOTR_REVISION, SPOTR_CONFIG, SPOTR_MAX_CHANNELS, SPOTR_MAX_SAMPLES, verify_source
+from .vendor.spotr import SPOTREncoder as SPOTRCore
 
 
 @dataclass
 class EncodedSignal:
-    values: torch.Tensor             # [M, 512]
-    intervals_s: torch.Tensor        # [M,2], elapsed start/end seconds
+    values: torch.Tensor             # [M,512], one global token per channel group/window
+    intervals_s: torch.Tensor        # [M,2], elapsed start/end seconds before internal padding
 
 
-class MantisEncoder(nn.Module):
+class SPOTREncoder(nn.Module):
     width = 512
 
-    def __init__(self, core, max_batch_samples=1_000_000):
+    def __init__(self, core):
         super().__init__()
         self.core = core.requires_grad_(False).eval()
-        if isinstance(max_batch_samples, bool) or not isinstance(max_batch_samples, int) or max_batch_samples < 64:
-            raise ValueError("Encoder batch budget must allow at least 64 native samples")
-        self.max_batch_samples = max_batch_samples
 
     @classmethod
-    def load(cls, directory, max_batch_samples=1_000_000):
-        from mantis.architecture import MantisV2
-        verify_source(directory, MANTIS_ID, MANTIS_REVISION)
-        core = MantisV2(device="cpu", return_transf_layer=2, output_token="combined", pre_training=False)
-        core = core.from_pretrained(str(directory), local_files_only=True)
-        core.remove_transf_layers()
-        return cls(core, max_batch_samples)
+    def load(cls, directory):
+        directory = Path(directory)
+        verify_source(directory, SPOTR_ID, SPOTR_REVISION)
+        config = json.loads((directory/"config.json").read_text(encoding="utf-8"))
+        if config != SPOTR_CONFIG:
+            raise ValueError("SPOTR configuration must match the pinned Base checkpoint")
+        core = SPOTRCore(**config)
+        core.load_state_dict(load_file(str(directory/"model.safetensors")), strict=True)
+        return cls(core)
 
     @torch.no_grad()
     def forward(self, encoder_input):
-        frames = encoder_input.frames
+        frames, intervals = encoder_input.frames, encoder_input.intervals_s
         if not frames:
-            raise ValueError("Mantis needs at least one native window")
-        intervals = encoder_input.intervals_s
+            raise ValueError("SPOTR needs at least one native window")
         if (intervals.shape != (len(frames), 2) or not torch.isfinite(intervals).all()
                 or (intervals[:, 0] < 0).any() or (intervals[:, 1] <= intervals[:, 0]).any()):
-            raise ValueError("Mantis windows need valid elapsed start/end intervals")
+            raise ValueError("SPOTR windows need valid elapsed start/end intervals")
         groups = {}
         for index, frame in enumerate(frames):
-            if (frame.ndim != 2 or frame.shape[0] != 1 or frame.shape[1] % 32
-                    or not 64 <= frame.shape[1] <= self.max_batch_samples or not torch.isfinite(frame).all()):
-                raise ValueError("Mantis expects finite windows [1,L], L >= 64 and divisible by 32, within budget")
-            groups.setdefault(frame.shape[1], []).append(index)
-        values = frames[0].new_empty(len(frames), 512)
-        for length, indices in groups.items():
-            batch_size = self.max_batch_samples // length
+            if (frame.ndim != 2 or not 1 <= frame.shape[0] <= SPOTR_MAX_CHANNELS
+                    or not 2 <= frame.shape[1] <= SPOTR_MAX_SAMPLES or not torch.isfinite(frame).all()):
+                raise ValueError("SPOTR expects finite [C,L] windows: 1–128 channels, 2–12800 samples")
+            groups.setdefault(tuple(frame.shape), []).append(index)
+        values = frames[0].new_empty(len(frames), self.width)
+        for (channels, length), indices in groups.items():
+            # Bound each batch by one full-capacity SPOTR input volume.
+            batch_size = (SPOTR_MAX_CHANNELS*SPOTR_MAX_SAMPLES) // (channels*length)
+            patches = 2*((length+199)//200)
             for start in range(0, len(indices), batch_size):
                 current = indices[start:start+batch_size]
-                output = self.core(torch.stack([frames[i] for i in current]))
-                if output.shape != (len(current), 512) or not torch.isfinite(output).all():
-                    raise ValueError("Pinned Mantis combined output must have shape [G,512] and be finite")
-                values[current] = output
+                tokens = self.core(torch.stack([frames[i] for i in current]))
+                if tokens.shape != (len(current), 1+channels+patches, self.width) or not torch.isfinite(tokens).all():
+                    raise ValueError("Pinned SPOTR must return finite tokens [G,1+C+N,512]")
+                values[current] = tokens[:, 0]
         return EncodedSignal(values, intervals)

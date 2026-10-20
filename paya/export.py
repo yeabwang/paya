@@ -47,7 +47,7 @@ def load_bundle(directory, device="cpu"):
         if sha256(contained_file(root, name)) != expected:
             raise ValueError(f"Bundle file checksum changed: {name}")
     config = json.loads((root/"config.json").read_text(encoding="utf-8"))
-    assets = {name: root/name for name in ("mantis", "text")}
+    assets = {name: root/name for name in ("spotr", "text")}
     model = PayaModel.from_assets(assets, config["preparation"], config["head"], device)
     if manifest["identity"] != model.identity():
         raise ValueError("Bundle identities differ")

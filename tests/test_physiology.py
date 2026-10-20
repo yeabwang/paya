@@ -167,8 +167,8 @@ def test_eeg_quality_flags_do_not_remove_or_rereference_channels():
     assert len(prepared.audit["quality"]) == 6
     for audit in prepared.audit["quality"]:
         assert audit["channel_quality"]["status"] == "available"
-    # Each native channel contributes one full-context window; none are silently discarded.
-    assert len(processor.format(prepared).frames) == 6
+    frames = processor.format(prepared).frames
+    assert len(frames) == 1 and frames[0].shape == (6, 2048)
     assert len(prepared.channels) == 6
     json.dumps(prepared.audit, allow_nan=False)
 
@@ -176,10 +176,15 @@ def test_eeg_quality_flags_do_not_remove_or_rereference_channels():
 def test_five_minute_ecg_is_fully_covered_without_time_compression():
     processor = SignalPreprocessor()
     prepared = processor.prepare(request("ecg", ecg(300)[0], 500))
-    mantis = processor.format(prepared)
-    assert [tuple(frame.shape) for frame in mantis.frames] == [(1, 149984), (1, 149984)]
-    assert mantis.intervals_s[0, 0] == 0 and mantis.intervals_s[-1, 1] == 300
-    torch.testing.assert_close(mantis.intervals_s, torch.tensor([[0, 149984/500], [16/500, 300]]))
+    encoded_input = processor.format(prepared)
+    assert [tuple(frame.shape) for frame in encoded_input.frames] == [(1, 12800)]*12
+    assert encoded_input.intervals_s[0, 0] == 0 and encoded_input.intervals_s[-1, 1] == 300
+    coverage = np.zeros(len(prepared.channels[0].samples), dtype=bool)
+    for frame, interval in zip(encoded_input.frames, encoded_input.intervals_s):
+        start = round(float(interval[0])*500)
+        np.testing.assert_array_equal(frame[0], prepared.channels[0].samples[start:start+12800])
+        coverage[start:start+12800] = True
+    assert coverage.all()
 
 
 @pytest.mark.parametrize("frequency", ["50", True, None, 45, float("nan")])

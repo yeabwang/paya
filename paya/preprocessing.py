@@ -1,4 +1,4 @@
-"""Validate native signals, clean raw channels and form Mantis windows."""
+"""Validate native signals, clean raw channels and form SPOTR channel groups and windows."""
 
 from dataclasses import dataclass, asdict, replace
 import hashlib
@@ -6,29 +6,30 @@ import json
 
 import neurokit2 as nk
 import numpy as np
+import scipy
 import torch
 
 from .inputs import Channel, UnsupportedSignalError, validate_state
 from .physiology import clean_channel, check_eeg_channels
-from .provenance import PREPARATION_CONTRACT, NATIVE_CONTRACT
+from .provenance import PREPARATION_CONTRACT, NATIVE_CONTRACT, SPOTR_MAX_CHANNELS, SPOTR_MAX_SAMPLES
 
 
 @dataclass(frozen=True)
 class PreparationConfig:
-    max_channels: int = 64
+    max_channels: int = SPOTR_MAX_CHANNELS
     max_samples: int = 1_000_000
     max_signal_tokens: int = 128
 
     def __post_init__(self):
         if any(isinstance(v, bool) or not isinstance(v, int) or v <= 0 for v in asdict(self).values()):
             raise ValueError("Preparation budgets must be positive integers")
-        if self.max_samples < 64:
-            raise ValueError("Sample budget must allow at least 64 native samples")
+        if self.max_channels > SPOTR_MAX_CHANNELS or self.max_samples < 2:
+            raise ValueError("SPOTR permits at most 128 channels and needs at least two samples")
 
 
 @dataclass
 class EncoderInput:
-    frames: list[torch.Tensor]       # Each native window has shape [1,L], L divisible by 32
+    frames: list[torch.Tensor]       # Each aligned native window has shape [C,L]
     intervals_s: torch.Tensor        # [windows, 2], elapsed start/end seconds
 
     def to(self, device):
@@ -42,12 +43,24 @@ class PreparedState:
     audit: dict
 
 
-def native_windows(length):
-    """Cover all samples with one aligned window or a prefix/suffix pair."""
-    if length < 64:
-        raise UnsupportedSignalError("Mantis needs 64 native samples: two per statistics patch")
-    aligned = length // 32 * 32
-    return [(0, aligned)] if aligned == length else [(0, aligned), (length-aligned, length)]
+def spotr_windows(length):
+    """Cover native samples within the pretrained temporal-position capacity."""
+    if length < 2:
+        raise UnsupportedSignalError("SPOTR needs at least two native samples for channel normalization")
+    if length <= SPOTR_MAX_SAMPLES:
+        return [(0, length)]
+    starts = list(range(0, length-SPOTR_MAX_SAMPLES+1, SPOTR_MAX_SAMPLES))
+    if starts[-1] != length-SPOTR_MAX_SAMPLES:
+        starts.append(length-SPOTR_MAX_SAMPLES)
+    return [(start, start+SPOTR_MAX_SAMPLES) for start in starts]
+
+
+def channel_groups(channels):
+    """Group aligned channels by native rate and length, preserving their order."""
+    groups = {}
+    for channel in channels:
+        groups.setdefault((channel.rate, len(channel.samples)), []).append(channel)
+    return list(groups.values())
 
 
 class SignalPreprocessor:
@@ -59,17 +72,19 @@ class SignalPreprocessor:
     def identity(self):
         return {"contract": PREPARATION_CONTRACT, "config": asdict(self.config),
                 "native_processing": NATIVE_CONTRACT, "neurokit2": nk.__version__,
-                "numpy": np.__version__, "signal_condition": ["raw", "processed"],
-                "sampling": "native-no-resampling", "framing": "full-context-prefix-suffix-32",
-                "minimum_samples": 64, "intervals": "elapsed-start-end-seconds",
-                "encoder_batch_sample_budget": self.config.max_samples}
+                "numpy": np.__version__, "scipy": scipy.__version__, "signal_condition": ["raw", "processed"],
+                "sampling": "native-no-resampling", "framing": "aligned-groups-capacity-windows",
+                "channel_order": "as-supplied", "minimum_samples": 2,
+                "encoder_max_channels": SPOTR_MAX_CHANNELS, "encoder_max_samples": SPOTR_MAX_SAMPLES,
+                "encoder_normalization": "channel-zscore", "encoder_padding": "zero-to-multiple-of-200",
+                "intervals": "elapsed-start-end-seconds"}
 
     def _check_frames(self, channels):
         count = 0
-        for channel in channels:
-            count += len(native_windows(len(channel.samples)))
+        for group in channel_groups(channels):
+            count += len(spotr_windows(len(group[0].samples)))
         if count > self.config.max_signal_tokens:
-            raise UnsupportedSignalError("Mantis signal-token budget exceeded")
+            raise UnsupportedSignalError("SPOTR signal-token budget exceeded")
 
     def prepare(self, state):
         """Validate all channels and run NeuroKit only on those marked raw."""
@@ -103,15 +118,16 @@ class SignalPreprocessor:
         return PreparedState(prepared, digest.hexdigest(), audit)
 
     def format(self, prepared):
-        """Retain full context and sample coverage without resampling or padding."""
+        """Group native channels and slice capacity-limited windows without external padding."""
         if prepared.audit.get("preparation") != self.identity():
             raise ValueError("Prepared signal does not match current preprocessing")
         self._check_frames(prepared.channels)
         frames, intervals = [], []
-        for channel in prepared.channels:
-            for start, end in native_windows(len(channel.samples)):
-                frames.append(torch.from_numpy(channel.samples[start:end])[None])
-                intervals.append([start/channel.rate, end/channel.rate])
+        for group in channel_groups(prepared.channels):
+            rate = group[0].rate
+            for start, end in spotr_windows(len(group[0].samples)):
+                frames.append(torch.from_numpy(np.stack([c.samples[start:end] for c in group])))
+                intervals.append([start/rate, end/rate])
         with np.errstate(over="ignore", invalid="ignore"):
             intervals = torch.from_numpy(np.asarray(intervals, dtype=np.float32))
         if (not torch.isfinite(intervals).all() or (intervals[:, 0] < 0).any()

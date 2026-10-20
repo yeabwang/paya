@@ -1,10 +1,10 @@
 seed: 42
 threads: 4
 assets:
-  mantis: third-party/mantis
+  spotr: third-party/spotr
   text: third-party/biolord
 preparation:
-  max_channels: 64
+  max_channels: 128
   max_samples: 1000000
   max_signal_tokens: 128
 head:

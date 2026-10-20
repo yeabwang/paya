@@ -45,7 +45,7 @@ def validate_text(question, criteria):
         raise ValueError("criteria entries must be distinct")
 
 
-def validate_state(state, max_channels=64, max_samples=1_000_000):
+def validate_state(state, max_channels=128, max_samples=1_000_000):
     if not isinstance(state, Mapping) or not isinstance(state.get("signals"), list):
         raise ValueError("state must contain a signals list")
     if not 1 <= len(state["signals"]) <= max_channels:
@@ -112,7 +112,4 @@ def validate_state(state, max_channels=64, max_samples=1_000_000):
         if (abs(c.start-first.start) > max(1e-9, 0.01*sample_interval)
                 or abs(len(c.samples)/c.rate-len(first.samples)/first.rate) > max(1e-9, 0.5*sample_interval)):
             raise ValueError("Channels must describe the same measured interval")
-    # Canonical ordering makes channel permutations produce identical preparations.
-    return sorted(channels, key=lambda c: (c.sensor_type,
-                  str(c.metadata.get("placement", "")), str(c.metadata.get("axis", "")),
-                  c.samples.tobytes()))
+    return channels
