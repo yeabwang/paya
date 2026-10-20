@@ -1,6 +1,6 @@
 # Paya architecture
 
-Paya uses frozen SPOTR Base and BioLORD-2023 encoders with one trainable decision head. Preprocessing has no learned parameters. Vendor-specific settings and operations are contained in [the vendor module](../paya/vendor/spotr.py). Shared code uses `SignalEncoder`; configuration and bundles identify the encoder assets explicitly with `spotr: third-party/spotr`.
+Paya uses frozen SPOTR Base and BioLORD-2023 encoders with one trainable decision head. Preprocessing has no learned parameters. Vendor-specific settings and operations are contained in [the vendor module](../paya/vendor/spotr.py). Shared code uses `SignalEncoder`; configuration and exported models identify the encoder assets explicitly with `spotr: third-party/spotr`.
 
 ```mermaid
 flowchart TD

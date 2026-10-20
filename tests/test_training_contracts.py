@@ -7,7 +7,8 @@ from paya.checkpoint import load_checkpoint, save_checkpoint, learned_digest
 from paya.data import ChoiceDataset, assert_disjoint
 from paya.features import FeatureCache
 from paya.calibrate import fit_temperature
-from paya.export import export_bundle, load_bundle
+from paya.export import export_model
+from paya.inference import load_model
 from paya.text import TextEncoder
 from conftest import new_model, state
 
@@ -168,7 +169,7 @@ def test_outcome_temperature_is_bound_to_decision_head(model, tmp_path):
     assert model.calibration is None and model.temperature == 1
 
 
-def test_bundle_roundtrip_and_integrity_with_tiny_asset_doubles(model, tmp_path, monkeypatch):
+def test_model_roundtrip_and_integrity_with_tiny_asset_doubles(model, tmp_path, monkeypatch):
     import paya.export as module
     assets = {}
     for name in ("spotr", "text"):
@@ -176,18 +177,18 @@ def test_bundle_roundtrip_and_integrity_with_tiny_asset_doubles(model, tmp_path,
         (root/"weights.txt").write_text(name, encoding="utf-8")
         assets[name] = root
     monkeypatch.setattr(module, "verify_assets", lambda _: model.asset_identity)
-    monkeypatch.setattr(module.PayaModel, "from_assets", lambda *args, **kwargs: new_model())
-    root = tmp_path/"bundle"
-    manifest = export_bundle(model, assets, root)
+    monkeypatch.setattr("paya.inference.PayaModel.from_assets", lambda *args, **kwargs: new_model())
+    root = tmp_path/"model"
+    manifest = export_model(model, assets, root)
     assert not manifest["calibrated"]
-    loaded = load_bundle(root)
+    loaded = load_model(root)
     assert loaded.predict(state(), "q", ["a", "b"]) == model.predict(state(), "q", ["a", "b"])
     with pytest.raises(FileExistsError):
-        export_bundle(model, assets, root)
+        export_model(model, assets, root)
     assert (root/"spotr"/"weights.txt").is_file()
     (root/"spotr"/"weights.txt").write_text("modified", encoding="utf-8")
     with pytest.raises(ValueError, match="checksum"):
-        load_bundle(root)
+        load_model(root)
 
 
 def test_training_entrypoint_and_resume_with_frozen_encoder(tmp_path, monkeypatch):

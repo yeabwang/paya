@@ -1,4 +1,4 @@
-"""Export and verify self-contained inference bundles."""
+"""Export models with verified weights and encoder assets."""
 
 import argparse
 import json
@@ -9,11 +9,10 @@ import yaml
 
 from .checkpoint import load_checkpoint, save_checkpoint
 from .model import PayaModel
-from .provenance import RUNTIME_CONTRACT, contained_file, sha256, verify_assets
-from .vendor import signal
+from .provenance import RUNTIME_CONTRACT, sha256, verify_assets
 
 
-def export_bundle(model, assets, output):
+def export_model(model, assets, output):
     root = Path(output).resolve()
     if root.exists() and any(root.iterdir()):
         raise FileExistsError("Export destination must be empty")
@@ -39,23 +38,6 @@ def export_bundle(model, assets, output):
     return manifest
 
 
-def load_bundle(directory, device="cpu"):
-    root = Path(directory).resolve()
-    manifest = json.loads((root/"manifest.json").read_text(encoding="utf-8"))
-    if manifest.get("contract") != RUNTIME_CONTRACT:
-        raise ValueError("Unsupported bundle architecture")
-    for name, expected in manifest["files"].items():
-        if sha256(contained_file(root, name)) != expected:
-            raise ValueError(f"Bundle file checksum changed: {name}")
-    config = json.loads((root/"config.json").read_text(encoding="utf-8"))
-    assets = {name: root/name for name in (signal.ASSET_KEY, "text")}
-    model = PayaModel.from_assets(assets, config["preparation"], config["head"], device)
-    if manifest["identity"] != model.identity():
-        raise ValueError("Bundle identities differ")
-    load_checkpoint(root/"decision.pt", model)
-    return model
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=Path("config/paya.yaml"))
@@ -65,4 +47,4 @@ if __name__ == "__main__":
     config = yaml.safe_load(args.config.read_text(encoding="utf-8"))
     model = PayaModel.from_assets(config["assets"], config.get("preparation"), config.get("head"))
     load_checkpoint(args.checkpoint, model)
-    print(json.dumps(export_bundle(model, config["assets"], args.output), indent=2)[:1000])
+    print(json.dumps(export_model(model, config["assets"], args.output), indent=2)[:1000])

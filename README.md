@@ -5,9 +5,9 @@
 ## Use
 
 ```python
-from paya.inference import load_bundle
+from paya.inference import load_model
 
-model = load_bundle("artifacts/paya-v1")
+model = load_model("artifacts/paya-v1")
 state = {"signals": [{
     "samples": ppg_samples,
     "metadata": {
@@ -42,7 +42,7 @@ Frozen BioLORD-2023 encodes the question and each choice separately for the head
 
 The entire recording enters the signal encoder once as `[1,C,L]`, in supplied channel order, and returns one global `[1,512]` embedding. Ten seconds of PPG at 125 Hz enters as `[1,1,1250]`; six seconds at 65 Hz enters as `[1,1,390]`. There is no grouping, splitting or overlap. The head receives the signal embedding and separate question/choice embeddings, without metadata or elapsed-time features.
 
-Vendor identity, checkpoint loading, capacity limits and token extraction live in [paya/vendor/spotr.py](paya/vendor/spotr.py). Shared code uses `SignalEncoder`; configuration and bundles identify its assets explicitly as `spotr: third-party/spotr`. Probabilities are keyed by the exact choice strings; confidence equals the chosen choice's probability.
+Vendor identity, checkpoint loading, capacity limits and token extraction live in [paya/vendor/spotr.py](paya/vendor/spotr.py). Shared code uses `SignalEncoder`; configuration and exported models identify its assets explicitly as `spotr: third-party/spotr`. Probabilities are keyed by the exact choice strings; confidence equals the chosen choice's probability.
 
 Inputs must contain **1–128 channels and 2–12,800 samples per channel**. Longer recordings and mismatched channel rates are rejected. Raw filters can require more samples. Acceptance does not establish physiological sufficiency. SPOTR removes absolute amplitude and level, and its published downstream preparation uses 200 Hz; native-rate accuracy requires task-specific evaluation. See [architecture and dimensions](docs/architecture-fix.md), [signal preparation](docs/preprocessing.md) and [training and W&B](docs/training.md).
 
