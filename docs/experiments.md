@@ -237,3 +237,15 @@ Verification: 166 unit tests passed, including Arrow-view identity/fallback,
 chunk corruption/recovery, public compact checkpoint reload and exact epoch
 coverage. Final full-run metrics, independent
 calibration and retrospective test comparison remain pending.
+
+Full feature preparation completed in 352.81 seconds (all 1,637,289 rows).
+The bank contains frozen features and small text/audit indices, not another raw
+waveform copy. The full sampler and public pipeline passed 167 unit tests.
+
+Tracking audit: early development W&B runs included generic base-config head/
+batch metadata as well as the explicit bound experimental plan. The plan,
+saved weights, parameter counts and result files describe the actual experiment;
+do not interpret that generic metadata as its architecture or update size.
+The full runner now records the actual selected head, batch, smoothing and
+sampling mode directly. This instrumentation correction does not change any
+previous result or prediction.

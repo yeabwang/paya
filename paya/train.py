@@ -20,14 +20,22 @@ from .tracking import open_run, run_identity, log_best
 from .atomic import atomic_output
 
 
-def choice_loss(logits, targets, mask):
+def choice_loss(logits, targets, mask, smoothing=0.0, reduction="mean"):
     if targets.dtype != torch.long or targets.shape != (len(logits),):
         raise ValueError("Targets must be integer candidate indices [B]")
     if ((targets < 0) | (targets >= logits.shape[1])).any():
         raise ValueError("Target out of range")
     if not mask.gather(1, targets[:, None]).all():
         raise ValueError("Cannot train on a padded candidate")
-    return F.cross_entropy(logits, targets)
+    if not 0 <= smoothing < 1 or reduction not in ("mean","none"):
+        raise ValueError("Invalid candidate loss smoothing or reduction")
+    if smoothing==0:
+        return F.cross_entropy(logits, targets,reduction=reduction)
+    logp=logits.log_softmax(-1)
+    nll=-logp.gather(1,targets[:,None]).squeeze(1)
+    uniform=-logp.masked_fill(~mask,0).sum(-1)/mask.sum(-1)
+    values=(1-smoothing)*nll+smoothing*uniform
+    return values.mean() if reduction=="mean" else values
 
 
 def train(config_path, run_dir, device="cpu", resume=None):
@@ -151,7 +159,7 @@ def train(config_path, run_dir, device="cpu", resume=None):
                 optimizer.zero_grad(set_to_none=True)
                 model.train()
                 result = model(batch, cache=cache)
-                loss = choice_loss(result["logits"], targets, batch.criteria_mask)
+                loss = choice_loss(result["logits"], targets, batch.criteria_mask,opt.get("label_smoothing",0.0))
                 if not torch.isfinite(loss):
                     raise FloatingPointError("Nonfinite training loss")
                 loss.backward()

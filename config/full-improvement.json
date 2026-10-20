@@ -1,5 +1,6 @@
 {
   "directory": "runs/paya-full-003",
+  "base_config": "config/paya-compact-full.yaml",
   "bank_train": "cache/paya-full-bank/train",
   "bank_selection": "cache/paya-development/selection",
   "epochs": 3,

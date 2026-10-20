@@ -3,6 +3,7 @@
 import argparse
 from copy import deepcopy
 import json
+import os
 from pathlib import Path
 import random
 from time import perf_counter
@@ -21,6 +22,7 @@ from .head import DecisionHead, InteractionHead
 from .model import PayaModel
 from .provenance import fingerprint, sha256
 from .tracking import open_run
+from .train import choice_loss
 
 
 def class_weights(rows, power=0.5, maximum=4.0):
@@ -43,12 +45,7 @@ def class_weights(rows, power=0.5, maximum=4.0):
 
 def smoothed_choice_loss(logits, targets, mask, smoothing=0.0):
     """Uniform smoothing covers real candidates only, never padded -inf logits."""
-    if not 0 <= smoothing < 1:
-        raise ValueError("Smoothing must be in [0,1)")
-    logp = logits.log_softmax(-1)
-    nll = -logp.gather(1, targets[:, None]).squeeze(1)
-    smooth = -logp.masked_fill(~mask, 0).sum(-1) / mask.sum(-1)
-    return (1 - smoothing) * nll + smoothing * smooth
+    return choice_loss(logits,targets,mask,smoothing,reduction='none')
 
 
 class Bank:
@@ -153,8 +150,9 @@ def main():
     full_selection = Bank(selection_path) if plan.get('final_full_selection') else None
     if plan.get('epochs'):
         plan['steps']=((len(train.rows)+plan['batch_size']-1)//plan['batch_size'])*plan['epochs']
-    config = yaml.safe_load(Path('config/paya-fast.yaml').read_text())
-    model = PayaModel.from_assets(config['assets'], config['preparation'], config['head'], 'cuda')
+    config = yaml.safe_load(Path(plan.get('base_config','config/paya-fast.yaml')).read_text())
+    reference_head=yaml.safe_load(Path('config/paya-fast.yaml').read_text())['head']
+    model = PayaModel.from_assets(config['assets'], config['preparation'], reference_head, 'cuda')
     reference = root / 'reference.json'
     if not reference.exists():
         from .checkpoint import load_checkpoint
@@ -193,6 +191,9 @@ def main():
         settings = deepcopy(config)
         settings['wandb'].update(name='paya-' + experiment['name'], log_models=False)
         settings['head']=head.config
+        settings['batch_size']=plan.get('batch_size',256)
+        settings['optim'].update(lr=experiment.get('lr',3e-4),label_smoothing=experiment.get('smoothing',0),
+            optimizer_steps=plan['steps'],sampling='epoch-no-replacement' if sampler else 'uniform-with-replacement')
         settings['experiment'] = {**experiment, 'plan': plan, 'binding': binding, 'code_sha256': code}
         model.head = head
         proxies = {name: SimpleNamespace(rows=bank.rows, sha256=bank.sha256)
@@ -237,6 +238,7 @@ def main():
                             'wandb': {'id': run.id, 'entity': run.entity, 'project': run.project, 'mode': 'online'}}, out)
                     with atomic_output(root/'status.json','w') as out:
                         json.dump({'phase':'training','experiment':experiment['name'],'step':step,
+                            'code_revision':os.environ.get('PAYA_CODE_REVISION','source-hashes-in-result'),
                             'total_steps':plan['steps'],'epochs':plan.get('epochs'),
                             'completed_epochs':step//sampler.steps_per_epoch if sampler else None,
                             'latest_selection':history[-1] if history else None,'wandb_url':run.url,
