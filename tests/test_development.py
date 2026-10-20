@@ -135,3 +135,21 @@ def test_arrow_views_preserve_exact_preparation_identity_and_heterogeneous_fallb
     rows[1]['state']['signals'].append(rows[1]['state']['signals'][0])
     heterogeneous=pa.Table.from_pylist(rows)
     assert waveform_rows(heterogeneous)==heterogeneous.to_pylist()
+
+
+def test_experiment_bindings_include_effective_config_and_verify_frozen_source():
+    from copy import deepcopy
+    from types import SimpleNamespace
+    from paya.development import experiment_binding,verify_bank_identity
+    data=SimpleNamespace(sha256='data')
+    config={'optim':{'lr':.001},'wandb':{'name':'one'}}
+    original=experiment_binding({}, {}, {},data,data,config)
+    changed=deepcopy(config);changed['optim']['lr']=.002
+    assert experiment_binding({}, {}, {},data,data,changed)!=original
+    changed=deepcopy(config);changed['wandb']['name']='two'
+    assert experiment_binding({}, {}, {},data,data,changed)==original
+    bank=SimpleNamespace(manifest={'model_identity':{'assets':'same','head':'old'},'dataset_sha256':'data'})
+    model=SimpleNamespace(identity=lambda:{'assets':'same','head':'new'})
+    verify_bank_identity(bank,model,data)
+    with pytest.raises(ValueError,match='source dataset'):
+        verify_bank_identity(bank,model,SimpleNamespace(sha256='changed'))

@@ -269,3 +269,15 @@ depend on the HRV statistic and recording protocol and do not validate these
 PPG QA categories. Later data research should distinguish short-window label
 prediction from recovery of a longer-duration physiological measurement. No
 waveforms or QA labels were changed for these reasons in this cycle.
+
+### Post-run recovery hardening
+
+After full-003 completed, a code audit tightened future experiment bindings:
+they now include the effective base configuration as well as plan, source
+hashes and bank hashes. The runner checks the bank against current frozen
+assets/preparation and actual source manifests, rejects mismatched completed
+results, and checks GPU allocation before loading metadata/index arrays.
+This prevents silently reusing a bank or result after a configuration change.
+168 local unit tests passed. The completed full-003 model and its metrics still
+belong to the immutable `48754f3` training/evaluation revision; these checks do
+not change its weights or predictions.

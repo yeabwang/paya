@@ -18,6 +18,7 @@ import yaml
 from .atomic import atomic_output
 from .classification import classification_metrics
 from .evaluate import metrics
+from .data import ChoiceDataset, assert_disjoint
 from .head import DecisionHead, InteractionHead
 from .model import PayaModel
 from .provenance import fingerprint, sha256
@@ -56,6 +57,12 @@ class Bank:
             if sha256(self.path / name) != digest:
                 raise ValueError("Development bank checksum differs")
         self.manifest = manifest
+        selected_count=min(limit,manifest['rows']) if limit else manifest['rows']
+        if str(device).startswith('cuda'):
+            estimated=selected_count*(512*4+256)
+            free,_=torch.cuda.mem_get_info()
+            if estimated>free*.7:
+                raise ValueError("Feature bank exceeds the reserved GPU memory budget; reduce the development sample")
         indices = np.random.default_rng(seed).permutation(manifest['rows'])
         indices = indices[:limit] if limit else np.arange(manifest['rows'])
         self.indices = indices
@@ -74,11 +81,6 @@ class Bank:
         self.device = device
         def load(name):
             return np.load(self.path / (name + '.npy'), mmap_mode='r')
-        if str(device).startswith('cuda'):
-            estimated = len(indices) * (512 * 4 + 256)
-            free, _ = torch.cuda.mem_get_info()
-            if estimated > free * .7:
-                raise ValueError("Feature bank exceeds the reserved GPU memory budget; reduce the development sample")
         def selected(name):
             value=load(name)
             return np.asarray(value[indices] if limit else value)
@@ -112,6 +114,19 @@ class EpochBatches:
             self.order=torch.randperm(self.count,generator=generator,device=self.device)
             self.epoch=epoch
         return self.order[offset*self.batch_size:(offset+1)*self.batch_size]
+
+
+def experiment_binding(plan,experiment,code,train,selection,config):
+    return fingerprint({'plan':plan,'experiment':experiment,'code':code,
+        'train':train.sha256,'selection':selection.sha256,
+        'config':{key:value for key,value in config.items() if key!='wandb'}})
+
+
+def verify_bank_identity(bank,model,source):
+    expected={key:value for key,value in model.identity().items() if key!='head'}
+    actual={key:value for key,value in bank.manifest['model_identity'].items() if key!='head'}
+    if actual!=expected or bank.manifest['dataset_sha256']!=source.sha256:
+        raise ValueError("Feature bank differs from current frozen model/preparation or source dataset")
 
 
 @torch.no_grad()
@@ -153,6 +168,9 @@ def main():
     config = yaml.safe_load(Path(plan.get('base_config','config/paya-fast.yaml')).read_text())
     reference_head=yaml.safe_load(Path('config/paya-fast.yaml').read_text())['head']
     model = PayaModel.from_assets(config['assets'], config['preparation'], reference_head, 'cuda')
+    sources={role:ChoiceDataset(config['data'][role]) for role in ['train','selection']}
+    assert_disjoint(*sources.values())
+    for role,bank in [('train',train),('selection',selection)]:verify_bank_identity(bank,model,sources[role])
     reference = root / 'reference.json'
     if not reference.exists():
         from .checkpoint import load_checkpoint
@@ -166,7 +184,10 @@ def main():
             json.dump(evaluate(model.head, full_selection), out, indent=2, allow_nan=False)
     for experiment in plan['experiments']:
         destination = root / experiment['name']; destination.mkdir(exist_ok=True)
+        binding=experiment_binding(plan,experiment,code,train,selection,config)
         if (destination / 'result.json').exists():
+            if json.loads((destination/'result.json').read_text())['binding']!=binding:
+                raise ValueError("Completed experiment bindings differ; preserve its pinned code/config or use a fresh run")
             continue
         seed = experiment.get('seed', 42)
         torch.manual_seed(seed); torch.cuda.manual_seed_all(seed); random.seed(seed)
@@ -174,10 +195,10 @@ def main():
                 else DecisionHead(**config['head'])).cuda()
         weights = torch.tensor(class_weights(train.rows) if experiment.get('weighted')
                                else np.ones(len(train.rows), dtype=np.float32), device='cuda')
-        optimizer = torch.optim.AdamW(head.parameters(), lr=experiment.get('lr', 3e-4), weight_decay=.01)
+        learning_rate=experiment.get('lr',config['optim']['lr'])
+        optimizer = torch.optim.AdamW(head.parameters(), lr=learning_rate,
+            weight_decay=config['optim'].get('weight_decay',.01))
         sampler=EpochBatches(len(train.rows),plan.get('batch_size',256),seed,'cuda') if plan.get('epochs') else None
-        binding = fingerprint({'plan': plan, 'experiment': experiment, 'code': code,
-                               'train': train.sha256, 'selection': selection.sha256})
         resume = destination / 'last.pt'
         begin, best, best_state, history = 0, float('inf'), None, []
         previous = None
@@ -192,7 +213,7 @@ def main():
         settings['wandb'].update(name='paya-' + experiment['name'], log_models=False)
         settings['head']=head.config
         settings['batch_size']=plan.get('batch_size',256)
-        settings['optim'].update(lr=experiment.get('lr',3e-4),label_smoothing=experiment.get('smoothing',0),
+        settings['optim'].update(lr=learning_rate,label_smoothing=experiment.get('smoothing',0),
             optimizer_steps=plan['steps'],sampling='epoch-no-replacement' if sampler else 'uniform-with-replacement')
         settings['experiment'] = {**experiment, 'plan': plan, 'binding': binding, 'code_sha256': code}
         model.head = head
