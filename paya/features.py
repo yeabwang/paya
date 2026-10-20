@@ -5,6 +5,7 @@ from pathlib import Path
 import torch
 
 from .provenance import CACHE_CONTRACT, fingerprint
+from .atomic import atomic_output
 
 
 def tensor_digest(values):
@@ -39,8 +40,7 @@ class FeatureCache:
             return values.to(model.device)
         encoded = model.encode(prepared)
         values = encoded.cpu().float()
-        temporary = path.with_suffix(".partial")
-        torch.save({"binding": binding, "values": values,
-                    "digest": tensor_digest(values)}, temporary)
-        temporary.replace(path)
+        with atomic_output(path) as output:
+            torch.save({"binding": binding, "values": values,
+                        "digest": tensor_digest(values)}, output)
         return encoded

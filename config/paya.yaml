@@ -22,6 +22,7 @@ optim:
   epochs: 16
   lr: 0.0003
   weight_decay: 0.01
+  checkpoint_every_steps: 100
 wandb:
   project: paya
   mode: online

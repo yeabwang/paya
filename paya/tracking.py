@@ -3,7 +3,7 @@
 from contextlib import contextmanager
 
 from .checkpoint import save_checkpoint
-from .provenance import VERSION, sha256
+from .provenance import VERSION
 
 
 @contextmanager
@@ -25,16 +25,20 @@ def open_run(config, directory, model, datasets, previous=None):
     entity = settings.get("entity")
     continuation = {}
     if previous and mode == previous["mode"] == "online":
-        if project != previous["project"] or entity not in (None, previous["entity"]):
+        # W&B can return canonical capitalization different from the requested project.
+        if project.casefold() != previous["project"].casefold() or entity not in (None, previous["entity"]):
             raise ValueError("Online resume must use the saved W&B project and entity")
+        project = previous["project"]
         entity = previous["entity"]
         continuation = {"id": previous["id"], "resume": "must"}
     with wandb.init(project=project, entity=entity, name=settings.get("name") or directory.name,
                      mode=mode, dir=str(directory), save_code=False, **continuation,
+                     settings=wandb.Settings(init_timeout=90,finish_timeout=settings.get("finish_timeout",120),
+                                             finish_timeout_raises=True),
                      config=None if continuation else {"version": VERSION, "model": model.identity(),
                              "training": {k: v for k, v in config.items()
                                           if k not in ("wandb", "data", "assets", "feature_cache")},
-                             "datasets": {name: {"records": len(data.rows), "sha256": sha256(data.path)}
+                             "datasets": {name: {"records": len(data.rows), "sha256": data.sha256}
                                           for name, data in datasets.items()},
                              "resumed_from_run_id": previous["id"] if previous else None}) as run:
         run.define_metric("step")

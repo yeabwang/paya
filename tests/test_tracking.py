@@ -164,3 +164,18 @@ def test_package_and_artifact_versions_have_one_source():
     assert VERSION == "v1" and provenance.INPUT_SCHEMA_VERSION == 1
     for name in ("RUNTIME_CONTRACT", "PREPARATION_CONTRACT", "NATIVE_CONTRACT", "CACHE_CONTRACT", "TEXT_CONTRACT"):
         assert getattr(provenance, name).endswith(f"-{VERSION}")
+
+
+def test_online_resume_accepts_server_canonical_project_capitalization(tmp_path,model,monkeypatch):
+    import wandb
+    calls=[]
+    @contextmanager
+    def initialize(**kwargs):
+        calls.append(kwargs)
+        yield SimpleNamespace(define_metric=lambda *args,**kwargs:None)
+    monkeypatch.setattr(wandb,'init',initialize)
+    saved={'id':'existing','project':'Paya','entity':'team','mode':'online'}
+    with open_run({'wandb':{'mode':'online','project':'paya'}},tmp_path,model,{},saved):
+        pass
+    assert calls[0]['project']=='Paya' and calls[0]['id']=='existing'
+    assert calls[0]['resume']=='must'

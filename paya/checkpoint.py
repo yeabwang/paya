@@ -6,6 +6,7 @@ from pathlib import Path
 import torch
 
 from .provenance import RUNTIME_CONTRACT
+from .atomic import atomic_output
 
 
 def learned_state(model):
@@ -37,9 +38,8 @@ def save_checkpoint(path, model, training=None):
     payload = {"contract": RUNTIME_CONTRACT, "identity": model.identity(),
                "learned": learned_state(model), "temperature": temperature,
                "calibration": model.calibration, "training": training}
-    temporary = path.with_suffix(path.suffix + ".partial")
-    torch.save(payload, temporary)
-    temporary.replace(path)
+    with atomic_output(path) as output:
+        torch.save(payload, output)
 
 
 def load_checkpoint(path, model):

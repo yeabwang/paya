@@ -8,6 +8,7 @@
 /.pytest_cache/
 /.mypy_cache/
 /.test-tmp/
+/.temp/
 /build/
 /dist/
 *.egg-info/
