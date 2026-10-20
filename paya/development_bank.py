@@ -19,6 +19,10 @@ def main():
     torch.set_num_threads(8)
     root=Path('cache/paya-development');root.mkdir(exist_ok=True)
     config=yaml.safe_load(Path('config/paya-fast.yaml').read_text())
+    provenance_roots=list(Path('data').glob('*/provenance'))
+    if len(provenance_roots)!=1:
+        raise ValueError('Expected exactly one local provenance root')
+    provenance=provenance_roots[0]
     datasets={k:ChoiceDataset(config['data'][k]) for k in ['train','selection']}
     assert_disjoint(*datasets.values())
     model=PayaModel.from_assets(config['assets'],config['preparation'],config['head'],'cuda')
@@ -32,7 +36,7 @@ def main():
         # Only metadata is read during sampling; the test/calibration files are never opened.
         for file in dataset.files:
             origins={row['mapping_id']:row['qa_task'] for row in pq.ParquetFile(
-                Path('data/pulselm-paya/provenance')/file.parent.name/file.name).read(columns=['mapping_id','qa_task']).to_pylist()}
+                provenance/file.parent.name/file.name).read(columns=['mapping_id','qa_task']).to_pylist()}
             pf=pq.ParquetFile(file)
             for group in range(pf.metadata.num_row_groups):
                 rows=pf.read_row_group(group,columns=['mapping_id','source_id','group_id','question','criteria','target']).to_pylist()

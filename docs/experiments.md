@@ -34,6 +34,12 @@ and its checkpoints. No publication or instance changes are part of this work.
 - [On Calibration of Modern Neural Networks](https://arxiv.org/abs/1706.04599)
   motivates separate temperature fitting. A single fitted temperature is not
   evidence of transfer under task/population shift, as the reference run showed.
+- [When Does Label Smoothing Help?](https://arxiv.org/abs/1906.02629)
+  motivates the 0.05 smoothing ablation after the tiny fit showed extreme
+  held-out overconfidence. Results on other domains are hypotheses here.
+- [Calibrating Deep Neural Networks using Focal Loss](https://arxiv.org/abs/2002.09437)
+  is a possible later comparison if initial regularization fails; focal loss is
+  not assumed to improve this signal corpus without a matched experiment.
 - [scikit-learn AUROC](https://scikit-learn.org/stable/modules/generated/sklearn.metrics.roc_auc_score.html)
   and [F1](https://scikit-learn.org/stable/modules/generated/sklearn.metrics.f1_score.html)
   define the ranking and class-sensitive checks. Align probabilities by answer
