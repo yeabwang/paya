@@ -249,3 +249,22 @@ do not interpret that generic metadata as its architecture or update size.
 The full runner now records the actual selected head, batch, smoothing and
 sampling mode directly. This instrumentation correction does not change any
 previous result or prediction.
+
+### Data observability questions for later cycles
+
+Label agreement with the supplied QA is a data-integrity check, not independent
+verification of physiological ground truth. Some targets may require information
+the current normalized single-channel ten-second waveform does not preserve.
+For example, [primary pulse-oximetry research](https://pmc.ncbi.nlm.nih.gov/articles/PMC4029673/)
+derives saturation using two optical wavelengths and a ratio of their pulsatile/
+baseline components. The present one-channel input cannot supply that two-channel
+measurement; a learned category prediction can instead use correlations that
+may fail across populations. This is an observability hypothesis, not a finding
+that the supplied labels are wrong or a reason to relabel them.
+
+[A 3,387-adult HRV study](https://pmc.ncbi.nlm.nih.gov/articles/PMC4586373/)
+compared ultra-short ECG estimates with 240-300-second references. Its findings
+depend on the HRV statistic and recording protocol and do not validate these
+PPG QA categories. Later data research should distinguish short-window label
+prediction from recovery of a longer-duration physiological measurement. No
+waveforms or QA labels were changed for these reasons in this cycle.
