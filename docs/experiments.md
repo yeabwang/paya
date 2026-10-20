@@ -53,5 +53,31 @@ Initial hypotheses, not established causes:
 
 ## Ledger
 
-Pending: frozen-feature audit and matched small experiments. Raw operational
-scripts live in ignored `.temp/`; durable methods/results are committed here.
+### Audit and balanced memorization
+
+The 309-row integration corpus had 263 distinct frozen FP32 feature rows.
+Mean feature norm 12.90, mean-vector norm 8.38, mean centered norm 9.81.
+Cached and fresh batched features matched within the established tolerance.
+The completed checkpoint scored 29.70% on the 101 balanced selection examples;
+mean/zero replacement scored 25.74%, shuffled features 23.76%. This small,
+deliberately balanced diagnostic has different prevalence from full selection;
+it establishes signal sensitivity, not a generalization result. Duplicate
+features alone do not establish corruption because QA can share a waveform.
+
+Three seed-42, 400-update experiments used exactly 208 train/101 selection rows,
+batch 64, AdamW lr 0.0003/weight decay 0.01. All used frozen cached encoders and
+online W&B. The original head reached 100% train accuracy by step 400; adding
+signal LayerNorm also reached 100%. A 128-wide direct interaction MLP reached
+100% by step 100. Generalization did not follow: late selection NLLs exceeded
+5, while selection accuracy stayed around 28-38%. Do not promote these highly
+overfit heads. The architecture can memorize the supplied small multi-task
+labels; disconnected gradients or a universal inability to represent them are
+not supported explanations for the full-run failure.
+
+Next: a deterministic label-independent 1/16 QA sample of native train, with
+the whole unchanged selection corpus available for expansion. First compare
+8192 sampled training examples and a fixed 4096-row selection sample. Test
+natural cross-entropy, clipped square-root class weighting, label smoothing,
+and the smaller interaction head. All reported comparisons use the same rows
+and optimizer budget. Expand successful candidates only. Small pilots may miss
+rare classes; report support and verify on full selection before conclusions.

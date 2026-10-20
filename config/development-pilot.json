@@ -1,0 +1,16 @@
+{
+  "directory": "runs/paya-development-pilot-001",
+  "train_limit": 8192,
+  "selection_limit": 4096,
+  "steps": 800,
+  "batch_size": 256,
+  "evaluate_every": 200,
+  "experiments": [
+    {"name": "pilot-attention-ce", "head": "attention"},
+    {"name": "pilot-attention-weighted", "head": "attention", "weighted": true},
+    {"name": "pilot-attention-smooth", "head": "attention", "smoothing": 0.05},
+    {"name": "pilot-attention-weighted-smooth", "head": "attention", "weighted": true, "smoothing": 0.05},
+    {"name": "pilot-interaction-ce", "head": "interaction"},
+    {"name": "pilot-interaction-weighted-smooth", "head": "interaction", "weighted": true, "smoothing": 0.05}
+  ]
+}
