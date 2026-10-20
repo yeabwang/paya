@@ -1,4 +1,4 @@
-"""Train the shared decision head over frozen native-rate SPOTR embeddings."""
+"""Train the shared decision head over frozen native-rate signal embeddings."""
 
 import argparse
 import json

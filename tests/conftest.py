@@ -7,7 +7,6 @@ import pytest
 import torch
 from torch import nn
 
-from paya.encoders import EncodedSignal
 from paya.model import PayaModel
 
 
@@ -50,7 +49,7 @@ class EncoderDouble(nn.Module):
     def forward(self, encoder_input):
         self.calls += 1
         values = self.base(encoder_input.samples.mean().reshape(1, 1))
-        return EncodedSignal(values, encoder_input.intervals_s)
+        return values
 
 
 def new_model():

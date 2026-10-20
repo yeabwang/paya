@@ -11,7 +11,7 @@ from conftest import state
 
 
 @pytest.mark.integration
-def test_real_spotr_and_biolord_shapes_and_gradients(monkeypatch):
+def test_real_signal_and_text_encoder_shapes_and_gradients(monkeypatch):
     assets = {"spotr": "third-party/spotr", "text": "third-party/biolord"}
     if not all((Path(path)/"source.json").exists() for path in assets.values()):
         pytest.skip("Pinned encoder assets have not been prepared")
@@ -30,18 +30,17 @@ def test_real_spotr_and_biolord_shapes_and_gradients(monkeypatch):
         count = len(shapes)
         encoded = model.encode(prepared)
         assert len(shapes) == count+1
-        assert encoded.values.shape == (expected[0], 512) and encoded.intervals_s.shape == (expected[0], 2)
-        assert torch.isfinite(encoded.values).all()
+        assert encoded.shape == (expected[0], 512)
+        assert torch.isfinite(encoded).all()
         assert shapes[-1] == (expected, [1, 2+2*((expected[-1]+199)//200), 512])
         examples[f"{kind}-{rate}Hz"] = {"native_samples": round(rate*duration),
-            "spotr_input": expected, "spotr_tokens": shapes[-1][1], "spotr_global": list(encoded.values.shape),
-            "intervals_s": encoded.intervals_s.tolist()}
+            "encoder_input": expected, "encoder_tokens": shapes[-1][1], "encoder_global": list(encoded.shape)}
     joint = state(condition="processed")
     joint["signals"].append(state("eeg", condition="processed")["signals"][0])
     count = len(shapes)
     encoded_joint = model.encode(model.preprocessor.prepare(joint))
     assert len(shapes) == count+1
-    assert encoded_joint.values.shape == (1, 512)
+    assert encoded_joint.shape == (1, 512)
     assert shapes[-1] == ([1, 2, 3000], [1, 33, 512])
     batch = model.make_batch([state("ppg", 125, 10, condition="processed")],
                              ["Which category describes this signal?"], [["Low", "Normal", "High"]])
@@ -51,8 +50,8 @@ def test_real_spotr_and_biolord_shapes_and_gradients(monkeypatch):
     count = len(shapes)
     predicted = model.predict(state(), "Which category?", ["Slow", "Normal", "Fast"])
     assert len(shapes) == count+1
-    assert list(predicted) == ["choice", "probabilities", "confidence"]
-    assert len(predicted["probabilities"]) == 3 and abs(sum(predicted["probabilities"])-1) < 1e-6
+    assert list(predicted) == ["choice", "confidence", "probabilities"]
+    assert len(predicted["probabilities"]) == 3 and abs(sum(predicted["probabilities"].values())-1) < 1e-6
     model.train()
     torch.nn.functional.cross_entropy(model(batch)["logits"], torch.tensor([1])).backward()
     assert all(p.grad is None and not p.requires_grad for p in model.encoder.parameters())
@@ -84,7 +83,7 @@ def test_real_spotr_and_biolord_shapes_and_gradients(monkeypatch):
               "text_sequence_length": batch.criteria.shape[1]+1,
               "role_embeddings": list(model.head.roles.shape), "decision_logits": list(result["logits"].shape),
               "mixed_batch_logits": [2, 4],
-              "joint_channel_global": list(encoded_joint.values.shape),
+              "joint_channel_global": list(encoded_joint.shape),
               "encoder_calls_per_recording": 1,
               "trainable_parameters": sum(p.numel() for p in model.trainable_parameters()),
               "gradient_boundary": "decision head only; no optimizer step", "output_keys": list(predicted)}

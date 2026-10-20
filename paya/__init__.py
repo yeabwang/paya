@@ -1,4 +1,4 @@
-"""Body-signal decisions with ordered candidate probabilities."""
+"""Body-signal decisions with choice-keyed probabilities."""
 
 from .model import PayaModel
 from .inputs import UnsupportedSignalError

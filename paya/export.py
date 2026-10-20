@@ -10,6 +10,7 @@ import yaml
 from .checkpoint import load_checkpoint, save_checkpoint
 from .model import PayaModel
 from .provenance import RUNTIME_CONTRACT, contained_file, sha256, verify_assets
+from .vendor import signal
 
 
 def export_bundle(model, assets, output):
@@ -47,7 +48,7 @@ def load_bundle(directory, device="cpu"):
         if sha256(contained_file(root, name)) != expected:
             raise ValueError(f"Bundle file checksum changed: {name}")
     config = json.loads((root/"config.json").read_text(encoding="utf-8"))
-    assets = {name: root/name for name in ("spotr", "text")}
+    assets = {name: root/name for name in (signal.ASSET_KEY, "text")}
     model = PayaModel.from_assets(assets, config["preparation"], config["head"], device)
     if manifest["identity"] != model.identity():
         raise ValueError("Bundle identities differ")

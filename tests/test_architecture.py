@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import torch
 
-from paya.encoders import SPOTREncoder
+from paya.encoders import SignalEncoder
 from paya.head import DecisionHead
 from paya.train import choice_loss
 from conftest import state
@@ -33,11 +33,31 @@ def test_layer_shapes_and_separate_text_encoding(model):
 def test_public_output_and_one_frozen_signal_encoder(model):
     choices = ["slow", "normal", "fast"]
     result = model.predict(state(), "Which category?", choices)
-    assert list(result) == ["choice", "probabilities", "confidence"]
-    assert abs(sum(result["probabilities"])-1) < 1e-6
-    assert result["confidence"] == result["probabilities"][choices.index(result["choice"])]
+    assert list(result) == ["choice", "confidence", "probabilities"]
+    assert list(result["probabilities"]) == choices
+    assert abs(sum(result["probabilities"].values())-1) < 1e-6
+    assert result["confidence"] == result["probabilities"][result["choice"]]
     assert model.encoder.calls == 1
     assert not hasattr(model, "router") and not hasattr(model, "adapters")
+
+
+def test_choice_keyed_output_matches_requested_format_and_json_roundtrip(model, monkeypatch):
+    import json
+    choices = ["choice 1", "choice 2", "choice 3", "choice 4"]
+    values = torch.tensor([[0.82, 0.09, 0.06, 0.03]])
+    monkeypatch.setattr(model, "forward", lambda batch: {"logits": values.log()})
+    result = model.predict(state(condition="processed"), "Question?", choices)
+    assert result["choice"] == "choice 1"
+    assert result["confidence"] == pytest.approx(0.82)
+    assert result["probabilities"] == pytest.approx(dict(zip(choices, values[0].tolist())))
+    assert json.loads(json.dumps(result)) == result
+
+
+def test_no_time_features_in_encoder_input_or_head_signature(model):
+    encoder_input = model.preprocessor.format(model.preprocessor.prepare(state(condition="processed")))
+    assert set(vars(encoder_input)) == {"samples"}
+    assert list(inspect.signature(model.head.forward).parameters) == [
+        "signal", "signal_mask", "question", "criteria", "criteria_mask"]
 
 
 @pytest.mark.parametrize("condition", ["raw", "processed"])
@@ -53,10 +73,10 @@ def test_stage_order_native_preparation_then_framing_and_encoding(model, monkeyp
         return original_format(prepared)
     monkeypatch.setattr(module, "clean_channel", clean)
     monkeypatch.setattr(model.preprocessor, "format", format_signal)
-    hook = model.encoder.register_forward_pre_hook(lambda *_: events.append("spotr"))
+    hook = model.encoder.register_forward_pre_hook(lambda *_: events.append("encoder"))
     model.predict(state(condition=condition), "Question?", ["a", "b"])
     hook.remove()
-    assert events == (["neurokit"] if condition == "raw" else []) + ["format", "spotr"]
+    assert events == (["neurokit"] if condition == "raw" else []) + ["format", "encoder"]
 
 
 def test_prepared_signal_reuse(model, monkeypatch):
@@ -84,10 +104,10 @@ def test_candidate_permutation_and_audit_invariance(model):
     request["dataset_id"] = "audit only"
     request["signals"][0]["metadata"]["subject_id"] = "audit only"
     second = model.predict(request, "Which category?", criteria)
-    torch.testing.assert_close(torch.tensor(first["probabilities"]), torch.tensor(second["probabilities"]), atol=1e-6, rtol=1e-6)
+    torch.testing.assert_close(torch.tensor(list(first["probabilities"].values())), torch.tensor(list(second["probabilities"].values())), atol=1e-6, rtol=1e-6)
     order = [2, 0, 1]
     third = model.predict(request, "Which category?", [criteria[i] for i in order])
-    torch.testing.assert_close(torch.tensor(third["probabilities"]), torch.tensor(first["probabilities"])[order], atol=1e-6, rtol=1e-6)
+    torch.testing.assert_close(torch.tensor(list(third["probabilities"].values())), torch.tensor(list(first["probabilities"].values()))[order], atol=1e-6, rtol=1e-6)
 
 
 def test_heterogeneous_batch_masks_gradients_and_frozen_boundaries(model):
@@ -106,11 +126,11 @@ def test_heterogeneous_batch_masks_gradients_and_frozen_boundaries(model):
 def test_empty_signal_attention_mask_is_rejected(model):
     batch = model.make_batch([state()], ["q"], [["a", "b"]])
     with pytest.raises(ValueError, match="real signal"):
-        model.head(torch.zeros(1, 2, 512), torch.zeros(1, 2, dtype=torch.bool), torch.zeros(1, 2, 2),
+        model.head(torch.zeros(1, 2, 512), torch.zeros(1, 2, dtype=torch.bool),
                    batch.question, batch.criteria, batch.criteria_mask)
 
 
-def test_encoder_wrapper_keeps_native_recording_and_duration():
+def test_encoder_wrapper_keeps_complete_native_recording():
     from torch import nn
     from paya.preprocessing import SignalPreprocessor
     class Core(nn.Module):
@@ -123,66 +143,25 @@ def test_encoder_wrapper_keeps_native_recording_and_duration():
     processor = SignalPreprocessor()
     prepared = processor.prepare(state())
     frames = processor.format(prepared)
-    encoded = SPOTREncoder(Core())(frames)
-    assert encoded.values.shape == (1, 512) and encoded.intervals_s.shape == (1, 2)
-    torch.testing.assert_close(encoded.values[0], frames.samples.mean().expand(512))
-    torch.testing.assert_close(encoded.intervals_s, frames.intervals_s)
+    encoded = SignalEncoder(Core())(frames)
+    assert encoded.shape == (1, 512)
+    torch.testing.assert_close(encoded[0], frames.samples.mean().expand(512))
 
 
-def test_single_signal_token_keeps_physical_time_in_attention_values():
-    from paya.head import CrossAttention, interval_encoding
-    layer = CrossAttention(width=8, heads=1, dropout=0).eval()
-    with torch.no_grad():
-        for parameter in layer.parameters():
-            parameter.zero_()
-        layer.output.weight.copy_(torch.eye(8))
-    signal, text = torch.zeros(1, 1, 512), torch.zeros(1, 1, 8)
-    mask = torch.ones(1, 1, dtype=torch.bool)
-    first_time = interval_encoding(torch.tensor([[[0., 10.]]]), 8)
-    second_time = interval_encoding(torch.tensor([[[0., 5.]]]), 8)
-    first = layer(text, signal, first_time, mask)
-    second = layer(text, signal, second_time, mask)
-    torch.testing.assert_close(first, first_time)
-    torch.testing.assert_close(second, second_time)
-    assert not torch.allclose(first, second)
-
-
-@pytest.mark.parametrize("width", [2, 7, 256])
-def test_interval_encoding_keeps_both_elapsed_endpoints(width):
-    from paya.head import interval_encoding
-    intervals = torch.tensor([[[0., 10.], [0.25, 20.], [5., 100.]]])
-    encoded = interval_encoding(intervals, width)
-    assert encoded.shape == (1, 3, width) and torch.isfinite(encoded).all()
-    torch.testing.assert_close(encoded[..., 0], torch.sin(2*torch.pi*intervals[..., 0]))
-    torch.testing.assert_close(encoded[..., width//2], torch.sin(2*torch.pi*intervals[..., 1]))
-
-
-@pytest.mark.parametrize("intervals", [torch.zeros(1, 2), torch.zeros(1, 2, 3),
-    torch.tensor([[[0., float("nan")], [0., 1.]]]),
-    torch.tensor([[[-0.1, 1.], [0., 1.]]]), torch.tensor([[[2., 1.], [0., 1.]]]),
-    torch.tensor([[[0., 0.], [0., 1.]]])])
-def test_head_rejects_invalid_physical_intervals(intervals):
-    head = DecisionHead(dropout=0)
-    with pytest.raises(ValueError, match="(?i)(intervals|finite)"):
-        head(torch.zeros(1, 2, 512), torch.ones(1, 2, dtype=torch.bool), intervals,
-             torch.zeros(1, 768), torch.zeros(1, 2, 768), torch.ones(1, 2, dtype=torch.bool))
-
-
-def test_head_ignores_padding_and_preserves_signal_interval_pairs():
+def test_head_ignores_padding_and_preserves_signal_permutation_invariance():
     head = DecisionHead(dropout=0).eval()
     generator = torch.Generator().manual_seed(7)
     signal = torch.randn(1, 3, 512, generator=generator)
-    intervals = torch.tensor([[[0., 9.984], [0.016, 10.], [0., 6.]]])
     question = torch.randn(1, 768, generator=generator)
     criteria = torch.randn(1, 2, 768, generator=generator)
     mask = torch.ones(1, 3, dtype=torch.bool)
     choices = torch.ones(1, 2, dtype=torch.bool)
-    expected = head(signal, mask, intervals, question, criteria, choices)
+    expected = head(signal, mask, question, criteria, choices)
     order = [2, 0, 1]
-    actual = head(signal[:, order], mask, intervals[:, order], question, criteria, choices)
+    actual = head(signal[:, order], mask, question, criteria, choices)
     torch.testing.assert_close(actual, expected)
     padded = head(torch.cat((signal, torch.full((1, 1, 512), 100.0)), 1),
-                  torch.tensor([[True, True, True, False]]), torch.cat((intervals, torch.zeros(1, 1, 2)), 1),
+                  torch.tensor([[True, True, True, False]]),
                   question, torch.cat((criteria, torch.full((1, 1, 768), 100.0)), 1),
                   torch.tensor([[True, True, False]]))
     torch.testing.assert_close(padded[:, :2], expected)
@@ -200,32 +179,20 @@ def test_encoder_runs_once_for_the_complete_recording(shape):
             batch, channels, length = x.shape
             return x.mean((1, 2))[:, None, None].expand(batch, 1+channels+2*((length+199)//200), 512)
     samples = torch.full(shape, 2.)
-    intervals = torch.tensor([[0., 10.]])
-    result = SPOTREncoder(Core())(EncoderInput(samples, intervals))
+    result = SignalEncoder(Core())(EncoderInput(samples))
     assert seen == [(1, *shape)]
-    torch.testing.assert_close(result.values, torch.full((1, 512), 2.))
-    torch.testing.assert_close(result.intervals_s, intervals)
+    torch.testing.assert_close(result, torch.full((1, 512), 2.))
 
 
-def test_same_samples_at_different_rates_keep_different_physical_times(model):
+def test_same_processed_samples_at_different_rates_have_no_time_features(model):
     import copy
     first = state("ppg", 125, 10, condition="processed")
     second = copy.deepcopy(first)
     second["signals"][0]["metadata"].update(sampling_rate_hz=250, duration_s=5)
     a = model.encode(model.preprocessor.prepare(first))
     b = model.encode(model.preprocessor.prepare(second))
-    torch.testing.assert_close(a.values, b.values, atol=0, rtol=0)
-    torch.testing.assert_close(a.intervals_s, b.intervals_s*2, atol=0, rtol=0)
-
-
-def test_encoder_rejects_invalid_interval_before_running_frozen_weights():
-    from torch import nn
-    from paya.preprocessing import EncoderInput
-    class Core(nn.Module):
-        def forward(self, x):
-            pytest.fail("Invalid intervals must fail before frozen encoding")
-    with pytest.raises(ValueError, match="interval"):
-        SPOTREncoder(Core())(EncoderInput(torch.zeros(1, 2), torch.tensor([[1., 0.]])))
+    torch.testing.assert_close(a, b, atol=0, rtol=0)
+    assert model.predict(first, "Question?", ["a", "b"]) == model.predict(second, "Question?", ["a", "b"])
 
 
 @pytest.mark.parametrize("shape", [(0, 200), (129, 200), (1, 1), (1, 12801), (200,)])
@@ -235,13 +202,14 @@ def test_encoder_rejects_inputs_outside_pretrained_capacity(shape):
     class Core(nn.Module):
         def forward(self, x):
             pytest.fail("Invalid waveform shape must fail before frozen encoding")
-    with pytest.raises(ValueError, match="SPOTR expects"):
-        SPOTREncoder(Core())(EncoderInput(torch.zeros(shape), torch.tensor([[0., 1.]])))
+    with pytest.raises(ValueError, match="expects finite"):
+        SignalEncoder(Core())(EncoderInput(torch.zeros(shape)))
 
 
 @pytest.mark.parametrize("channels,length", [(1, 2), (2, 199), (3, 200), (2, 201), (1, 12800)])
-def test_spotr_core_native_normalization_padding_and_shapes(channels, length):
-    from paya.vendor.spotr import SPOTREncoder as Core
+def test_vendor_core_native_normalization_padding_and_shapes(channels, length):
+    from paya.vendor import signal
+    Core = signal.SPOTREncoder
     core = Core(encoder_dim=16, num_heads=8, n_layers=1).eval()
     x = torch.randn(1, channels, length)
     with torch.no_grad():

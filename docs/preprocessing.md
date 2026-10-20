@@ -36,17 +36,17 @@ Optional electrical `powerline_hz` accepts numeric `0`, `50` or `60`; no frequen
 
 Stack all channels as `[C,L]` and run SPOTR once as `[1,C,L]`. There is no grouping, splitting, overlap, resampling or external padding. Mismatched channel rates or lengths and recordings above 12,800 samples per channel are rejected before NeuroKit runs. The limit follows the checkpoint's 128 temporal positions and 100-sample patches; it is not a fixed physiological duration.
 
-| Recording | SPOTR input for one channel | Elapsed interval |
-| --- | --- | --- |
-| 10 s at 125 Hz, 1,250 samples | `[1,1,1250]` | `[0,10]` seconds |
-| 6 s at 65 Hz, 390 samples | `[1,1,390]` | `[0,6]` seconds |
-| 64 s at 200 Hz, 12,800 samples | `[1,1,12800]` | `[0,64]` seconds |
+| Recording | Encoder input for one channel |
+| --- | --- |
+| 10 s at 125 Hz, 1,250 samples | `[1,1,1250]` |
+| 6 s at 65 Hz, 390 samples | `[1,1,390]` |
+| 64 s at 200 Hz, 12,800 samples | `[1,1,12800]` |
 
 SPOTR z-scores each channel using its real samples, then pads internally with zeros to a multiple of 200. The numerical minimum is two samples because the upstream standard deviation uses sample correction. Defaults cap each request at 128 channels and 12,800 samples per channel. Every accepted recording produces one 512-dimensional global embedding.
 
 ## Physiological scope
 
-The recording duration remains available through elapsed `[0,duration_s]` encoding. These two numbers do not trigger another inference. SPOTR's z-score removes absolute level and amplitude: absolute voltage or optical intensity cannot be recovered from normalized embeddings alone.
+Sampling rate and duration remain required validation/cleaning metadata. They are not attached to embeddings or supplied to the decision head. Identical processed samples declared at different valid rates therefore yield identical model inputs. SPOTR's z-score also removes absolute level and amplitude: absolute voltage or optical intensity cannot be recovered from normalized embeddings alone.
 
 Acceptance does not establish suitability for every question. Pulse shape, pulse rate and HRV require different evidence and durations. SPOTR's published downstream pipeline uses 200 Hz and evaluates EEG, iEEG, ECG and PPG. Paya supports those four signal types and keeps the user's native rate; generalization and calibration must be evaluated by task, duration, rate and domain.
 

@@ -1,4 +1,4 @@
-"""Prepare native signals, encode with SPOTR and score separate candidate answers."""
+"""Prepare native signals, encode once and score separate candidate answers."""
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -6,12 +6,13 @@ from pathlib import Path
 import torch
 from torch import nn
 
-from .encoders import EncodedSignal, SPOTREncoder
+from .encoders import SignalEncoder
 from .head import DecisionHead
 from .inputs import validate_text
 from .preprocessing import SignalPreprocessor, PreparationConfig, PreparedState
 from .provenance import RUNTIME_CONTRACT, ARCHITECTURE, verify_assets
 from .text import TextEncoder
+from .vendor import signal
 
 
 @dataclass
@@ -29,11 +30,11 @@ class DecisionBatch:
 
 
 class PayaModel(nn.Module):
-    """Fuse frozen SPOTR signal embeddings with separate BioLORD text embeddings."""
+    """Fuse frozen signal embeddings with separate BioLORD text embeddings."""
 
-    def __init__(self, spotr, text_encoder, preparation=None, head=None, asset_identity=None):
+    def __init__(self, signal_encoder, text_encoder, preparation=None, head=None, asset_identity=None):
         super().__init__()
-        self.encoder = spotr.requires_grad_(False).eval()
+        self.encoder = signal_encoder.requires_grad_(False).eval()
         self.head = DecisionHead(**(head or {}))
         self.text_encoder = text_encoder
         self.preprocessor = SignalPreprocessor(preparation)
@@ -47,7 +48,7 @@ class PayaModel(nn.Module):
         sources = verify_assets(assets)
         settings = PreparationConfig(**(preparation or {}))
         text = TextEncoder(device=device, model_path=Path(assets["text"]))
-        model = cls(SPOTREncoder.load(assets["spotr"]), text, settings, head, sources)
+        model = cls(SignalEncoder.load(assets[signal.ASSET_KEY]), text, settings, head, sources)
         return model.to(device)
 
     @property
@@ -100,25 +101,20 @@ class PayaModel(nn.Module):
         encoder_input = self.preprocessor.format(prepared)
         with torch.no_grad():
             encoded = self.encoder(encoder_input.to(self.device))
-        if encoded.values.shape != (1, 512) or not torch.isfinite(encoded.values).all():
-            raise ValueError("Encoder must return one finite SPOTR global vector [1,512]")
-        intervals = encoded.intervals_s
-        if (intervals.shape != (len(encoded.values), 2) or not torch.isfinite(intervals).all()
-                or (intervals[:, 0] < 0).any() or (intervals[:, 1] <= intervals[:, 0]).any()):
-            raise ValueError("Invalid elapsed interval times")
-        return EncodedSignal(encoded.values.float().detach(), intervals.float().detach())
+        if encoded.shape != (1, 512) or not torch.isfinite(encoded).all():
+            raise ValueError("Encoder must return one finite signal vector [1,512]")
+        return encoded.float().detach()
 
     def forward(self, batch, cache=None):
         encoded = [cache.get_or_encode(self, state) if cache else self.encode(state) for state in batch.states]
-        signal = torch.stack([e.values.to(self.device) for e in encoded])
-        intervals = torch.stack([e.intervals_s.to(self.device) for e in encoded])
+        signal = torch.stack([e.to(self.device) for e in encoded])
         mask = torch.ones(len(encoded), 1, dtype=torch.bool, device=self.device)
-        logits = self.head(signal, mask, intervals, batch.question, batch.criteria, batch.criteria_mask)
+        logits = self.head(signal, mask, batch.question, batch.criteria, batch.criteria_mask)
         return {"logits": logits, "criteria_mask": batch.criteria_mask}
 
     @torch.no_grad()
     def predict(self, state, question, criteria):
-        """Return a choice, probabilities in criteria order and the chosen probability."""
+        """Return the chosen answer, its confidence and probabilities keyed by choice."""
         self.eval()
         if not torch.isfinite(self.temperature) or self.temperature <= 0:
             raise ValueError("Prediction temperature must be finite and positive")
@@ -126,5 +122,5 @@ class PayaModel(nn.Module):
         logits = self(batch)["logits"][0]
         probabilities = (logits / self.temperature).softmax(-1).cpu().tolist()
         chosen = min(range(len(criteria)), key=lambda i: (-probabilities[i], criteria[i]))
-        return {"choice": criteria[chosen], "probabilities": probabilities,
-                "confidence": probabilities[chosen]}
+        return {"choice": criteria[chosen], "confidence": probabilities[chosen],
+                "probabilities": dict(zip(criteria, probabilities))}

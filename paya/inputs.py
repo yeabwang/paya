@@ -7,7 +7,7 @@ from numbers import Real
 
 import numpy as np
 
-from .provenance import SPOTR_MAX_CHANNELS, SPOTR_MAX_SAMPLES
+from .vendor import signal
 
 TYPES = ("eeg", "ieeg", "ecg", "ppg")
 SIGNAL_CONDITIONS = ("raw", "processed")
@@ -46,7 +46,7 @@ def validate_text(question, criteria):
         raise ValueError("criteria entries must be distinct")
 
 
-def validate_state(state, max_channels=SPOTR_MAX_CHANNELS, max_samples=SPOTR_MAX_SAMPLES):
+def validate_state(state, max_channels=signal.MAX_CHANNELS, max_samples=signal.MAX_SAMPLES):
     if not isinstance(state, Mapping) or not isinstance(state.get("signals"), list):
         raise ValueError("state must contain a signals list")
     if not 1 <= len(state["signals"]) <= max_channels:
@@ -73,8 +73,8 @@ def validate_state(state, max_channels=SPOTR_MAX_CHANNELS, max_samples=SPOTR_MAX
             if isinstance(powerline, (bool, np.bool_)) or not isinstance(powerline, Real) or powerline not in (0, 50, 60):
                 raise ValueError("metadata.powerline_hz must be numeric 0, 50, or 60")
         raw = np.asarray(entry.get("samples"))
-        if raw.ndim != 1 or raw.dtype.kind not in "iuf" or not 2 <= raw.size <= max_samples:
-            raise ValueError(f"samples must contain 2–{max_samples} real numeric measurements")
+        if raw.ndim != 1 or raw.dtype.kind not in "iuf" or not signal.MIN_SAMPLES <= raw.size <= max_samples:
+            raise ValueError(f"samples must contain {signal.MIN_SAMPLES}–{max_samples} real numeric measurements")
         values = raw.astype(np.float64)
         if not np.isfinite(values).all():
             raise ValueError("Samples must be finite; missing intervals cannot be filled silently")
@@ -105,7 +105,7 @@ def validate_state(state, max_channels=SPOTR_MAX_CHANNELS, max_samples=SPOTR_MAX
     first = channels[0]
     for c in channels[1:]:
         if c.rate != first.rate or len(c.samples) != len(first.samples):
-            raise ValueError("All channels must have the same sampling rate and sample count for one SPOTR input")
+            raise ValueError("All channels must have the same sampling rate and sample count for one encoder input")
         if abs(c.start-first.start) > max(1e-9, 0.01/first.rate):
             raise ValueError("Channels must have the same start_time_s")
     return channels

@@ -10,7 +10,7 @@ Each JSONL row contains:
 | --- | --- |
 | `state` | Signal samples and metadata, using the public input format |
 | `question` | One nonempty question |
-| `criteria` | 2â€“64 distinct nonempty answer strings, in output order |
+| `criteria` | 2-64 distinct nonempty answer strings, in output order |
 | `target` | Zero-based correct criterion index |
 | `source_id`, `group_id`, `recording_id` | Audit identifiers for the window, subject/group and recording |
 
@@ -18,7 +18,7 @@ Keep all windows and questions from a recording in one split. Train, selection, 
 
 ## Signal preparation
 
-Dataset states require `sensor_type`, `sampling_rate_hz` and `duration_s` on every channel. `signal_condition` defaults to `raw`; `processed` skips NeuroKit. Use recordings appropriate to the question, with adequate duration and signal quality. Sampling rates and amplitude scales are retained. Frozen feature caches include the preparation identity, signal metadata, native samples and elapsed intervals. See [preprocessing](preprocessing.md).
+Dataset states require `sensor_type`, `sampling_rate_hz` and `duration_s` on every channel. `signal_condition` defaults to `raw`; `processed` skips NeuroKit. Use recordings appropriate to the question, with adequate duration and signal quality. Sampling rates and amplitude scales are retained during cleaning. Frozen feature caches store only the signal embedding and checksums, bound to the preparation, native signal and encoder identities. See [preprocessing](preprocessing.md).
 
 ## Run
 

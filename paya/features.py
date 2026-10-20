@@ -4,15 +4,13 @@ from pathlib import Path
 
 import torch
 
-from .encoders import EncodedSignal
 from .provenance import CACHE_CONTRACT, fingerprint
 
 
-def tensor_digest(values, intervals_s):
+def tensor_digest(values):
     import hashlib
     digest = hashlib.sha256()
-    for tensor in (values, intervals_s):
-        digest.update(tensor.contiguous().numpy().tobytes())
+    digest.update(values.contiguous().numpy().tobytes())
     return digest.hexdigest()
 
 
@@ -29,22 +27,20 @@ class FeatureCache:
             payload = torch.load(path, map_location="cpu", weights_only=True)
             if payload.get("binding") != binding:
                 raise ValueError("Frozen feature cache contract mismatch")
-            values, intervals = payload["values"], payload["intervals_s"]
-            if values.shape != (1, 512) or intervals.shape != (1, 2):
+            values = payload["values"]
+            if values.shape != (1, 512):
                 raise ValueError("Frozen feature cache shape mismatch")
-            if values.dtype != torch.float32 or intervals.dtype != torch.float32:
+            if values.dtype != torch.float32:
                 raise ValueError("Frozen feature cache must preserve FP32 computation")
-            if not torch.isfinite(values).all() or not torch.isfinite(intervals).all():
+            if not torch.isfinite(values).all():
                 raise ValueError("Nonfinite cached features")
-            if (intervals[:, 0] < 0).any() or (intervals[:, 1] <= intervals[:, 0]).any():
-                raise ValueError("Cached interval times are invalid")
-            if tensor_digest(values, intervals) != payload.get("digest"):
+            if tensor_digest(values) != payload.get("digest"):
                 raise ValueError("Cached feature content changed")
-            return EncodedSignal(values.to(model.device), intervals.to(model.device))
+            return values.to(model.device)
         encoded = model.encode(prepared)
-        values, intervals = encoded.values.cpu().float(), encoded.intervals_s.cpu().float()
+        values = encoded.cpu().float()
         temporary = path.with_suffix(".partial")
-        torch.save({"binding": binding, "values": values, "intervals_s": intervals,
-                    "digest": tensor_digest(values, intervals)}, temporary)
+        torch.save({"binding": binding, "values": values,
+                    "digest": tensor_digest(values)}, temporary)
         temporary.replace(path)
         return encoded

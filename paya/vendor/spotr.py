@@ -123,3 +123,80 @@ class SPOTREncoder(nn.Module):
     def forward(self, x):
         x_embedding, x = self.encode(x)
         return x_embedding
+
+
+ASSET_KEY = "spotr"
+MODEL_ID = "5gyyyyy/SPOTR"
+REVISION = "5a963ffaca341c6d875c69713133de526f6b905b"
+CODE_REVISION = "57b3c9f47cc7d20bc9852b84df9545f1dbb887f6"
+CHECKPOINT_SHA256 = "94ac49b21c9e22391fe8eb2869a057b1c3ddf776497b16e5e91491e4e1dbdbea"
+CONFIG = {"encoder_dim": 512, "patch_size": 100, "num_heads": 8, "n_layers": 12}
+MAX_CHANNELS = 128
+MAX_SAMPLES = 12800
+MIN_SAMPLES = 2
+WIDTH = 512
+IDENTITY = {"model_id": MODEL_ID, "revision": REVISION, "implementation_revision": CODE_REVISION,
+            "config": CONFIG, "output": "global-token", "dimension": WIDTH,
+            "normalization": "channel-zscore", "padding": "zero-to-multiple-of-200",
+            "max_channels": MAX_CHANNELS, "min_samples": MIN_SAMPLES, "max_samples": MAX_SAMPLES}
+
+
+def load_encoder(directory):
+    """Load the pinned Base checkpoint with exact configuration and tensor keys."""
+    import json
+    from pathlib import Path
+    from safetensors.torch import load_file
+    from ..provenance import verify_source
+    directory = Path(directory)
+    verify_source(directory, MODEL_ID, REVISION)
+    if json.loads((directory/"config.json").read_text(encoding="utf-8")) != CONFIG:
+        raise ValueError("SPOTR configuration must match the pinned Base checkpoint")
+    core = SPOTREncoder(**CONFIG)
+    core.load_state_dict(load_file(str(directory/"model.safetensors")), strict=True)
+    return core
+
+
+def encode(core, samples):
+    """Encode one complete recording and select the official global token."""
+    if (samples.ndim != 2 or not 1 <= samples.shape[0] <= MAX_CHANNELS
+            or not MIN_SAMPLES <= samples.shape[1] <= MAX_SAMPLES or not torch.isfinite(samples).all()):
+        raise ValueError("SPOTR expects finite [C,L] samples: 1-128 channels, 2-12800 samples")
+    channels, length = samples.shape
+    tokens = core(samples.unsqueeze(0))
+    patches = 2*((length+199)//200)
+    if tokens.shape != (1, 1+channels+patches, WIDTH) or not torch.isfinite(tokens).all():
+        raise ValueError("Pinned SPOTR must return finite tokens [1,1+C+N,512]")
+    return tokens[:, 0]
+
+def download_encoder(directory, checkpoint=None):
+    """Verify published tensor weights before converting them to safetensors."""
+    import json
+    from pathlib import Path
+    import shutil
+    from safetensors.torch import save_file
+    from ..provenance import sha256, verify_source
+    from huggingface_hub import hf_hub_download
+    root = Path(directory)
+    if (root/"source.json").exists():
+        return verify_source(root, MODEL_ID, REVISION)
+    root.mkdir(parents=True, exist_ok=True)
+    options = dict(repo_id=MODEL_ID, revision=REVISION, token=False, cache_dir="cache/huggingface")
+    checkpoint = Path(checkpoint) if checkpoint else Path(hf_hub_download(filename="SPOTREncoder.pt", **options))
+    if sha256(checkpoint) != CHECKPOINT_SHA256:
+        raise ValueError("SPOTR checkpoint differs from the published SHA-256")
+    state = torch.load(checkpoint, map_location="cpu", weights_only=True)
+    core = SPOTREncoder(**CONFIG)
+    core.load_state_dict(state, strict=True)
+    temporary = root/"model.safetensors.partial"
+    save_file({name: value.contiguous() for name, value in state.items()}, str(temporary))
+    temporary.replace(root/"model.safetensors")
+    (root/"config.json").write_text(json.dumps(CONFIG, indent=2), encoding="utf-8")
+    card = hf_hub_download(filename="README.md", **options)
+    shutil.copyfile(card, root/"README.md")
+    shutil.copyfile(Path(__file__).parent/"LICENSE", root/"LICENSE")
+    source = {"model_id": MODEL_ID, "revision": REVISION,
+              "implementation_revision": CODE_REVISION,
+              "upstream_checkpoint": "SPOTREncoder.pt", "upstream_sha256": CHECKPOINT_SHA256,
+              "files": {name: sha256(root/name) for name in ("model.safetensors", "config.json", "README.md", "LICENSE")}}
+    (root/"source.json").write_text(json.dumps(source, indent=2), encoding="utf-8")
+    return source

@@ -37,8 +37,7 @@ def test_fp32_cache_reuses_only_matching_preparation_and_detects_corruption(mode
     count = model.encoder.calls
     second = cache.get_or_encode(model, prepared)
     assert model.encoder.calls == count
-    torch.testing.assert_close(first.values, second.values, atol=0, rtol=0)
-    torch.testing.assert_close(first.intervals_s, second.intervals_s, atol=0, rtol=0)
+    torch.testing.assert_close(first, second, atol=0, rtol=0)
     changed = state(); changed["signals"][0]["samples"][0] += 0.1
     cache.get_or_encode(model, model.preprocessor.prepare(changed))
     assert model.encoder.calls == count+1
@@ -69,7 +68,7 @@ def test_feature_cache_hit_skips_formatting_and_binds_condition_and_rate(model, 
     for path in tmp_path.glob("*.pt"):
         payload = torch.load(path, weights_only=True)
         assert payload["values"].shape[1] == 512
-        assert payload["intervals_s"].shape == (len(payload["values"]), 2)
+        assert "intervals_s" not in payload
         assert "expert" not in payload["binding"]
 
 
@@ -81,8 +80,7 @@ def test_cache_rejects_multiple_signal_embeddings(model, tmp_path):
     path = next(tmp_path.glob("*.pt"))
     payload = torch.load(path, weights_only=True)
     payload["values"] = payload["values"].expand(2, -1).clone()
-    payload["intervals_s"] = payload["intervals_s"].expand(2, -1).clone()
-    payload["digest"] = tensor_digest(payload["values"], payload["intervals_s"])
+    payload["digest"] = tensor_digest(payload["values"])
     torch.save(payload, path)
     with pytest.raises(ValueError, match="shape mismatch"):
         cache.get_or_encode(model, prepared)
@@ -110,7 +108,7 @@ def test_checkpoint_rejects_a_different_text_and_position_contract(model, tmp_pa
     payload["identity"]["architecture"]["text_roles"].append("ending")
     payload["identity"]["architecture"]["signal_position"] = "time-scale-cls"
     torch.save(payload, path)
-    with pytest.raises(ValueError, match="SPOTR"):
+    with pytest.raises(ValueError, match="current architecture"):
         load_checkpoint(path, model)
 
 
@@ -136,7 +134,7 @@ def test_checkpoint_roundtrip_rejects_incompatible_head_and_preserves_output(mod
     assert set(payload["learned"]) == {"head"}
     assert "encoder" not in payload
     torch.save({"contract": "unrecognized", "head": {}}, tmp_path/"invalid.pt")
-    with pytest.raises(ValueError, match="SPOTR"):
+    with pytest.raises(ValueError, match="current architecture"):
         load_checkpoint(tmp_path/"invalid.pt", other)
 
 
@@ -186,6 +184,7 @@ def test_bundle_roundtrip_and_integrity_with_tiny_asset_doubles(model, tmp_path,
     assert loaded.predict(state(), "q", ["a", "b"]) == model.predict(state(), "q", ["a", "b"])
     with pytest.raises(FileExistsError):
         export_bundle(model, assets, root)
+    assert (root/"spotr"/"weights.txt").is_file()
     (root/"spotr"/"weights.txt").write_text("modified", encoding="utf-8")
     with pytest.raises(ValueError, match="checksum"):
         load_bundle(root)

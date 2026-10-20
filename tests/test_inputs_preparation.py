@@ -56,11 +56,9 @@ def test_native_preparations_for_supported_signals(kind):
     channel = prepared.channels[0]
     assert channel.rate == rate and channel.metadata["signal_condition"] == "raw"
     encoded_input = processor.format(prepared)
-    assert encoded_input.intervals_s.shape == (1, 2)
     assert encoded_input.samples.shape == (1, len(channel.samples))
     assert encoded_input.samples.dtype == torch.float32 and torch.isfinite(encoded_input.samples).all()
     torch.testing.assert_close(encoded_input.samples[0], torch.from_numpy(channel.samples), atol=0, rtol=0)
-    torch.testing.assert_close(encoded_input.intervals_s[0], torch.tensor([0., len(channel.samples)/rate]))
 
 
 def test_public_sensor_types_and_ieeg_case_normalization():
@@ -129,11 +127,10 @@ def test_complete_recording_without_splitting_resampling_or_external_padding(rat
     samples = prepared.channels[0].samples
     assert encoded_input.samples.shape == (1, count)
     np.testing.assert_array_equal(encoded_input.samples[0], samples)
-    torch.testing.assert_close(encoded_input.intervals_s, torch.tensor([[0., count/rate]]))
 
 
 @pytest.mark.parametrize("length", [2, 31, 32, 33, 63])
-def test_processed_short_signals_follow_spotr_normalization_minimum(length, monkeypatch):
+def test_processed_short_signals_follow_encoder_normalization_minimum(length, monkeypatch):
     import paya.preprocessing as module
     def unexpected(*args, **kwargs):
         pytest.fail("Processed inputs must skip NeuroKit")
@@ -221,7 +218,7 @@ def test_overlength_recordings_are_rejected_before_neurokit(monkeypatch, conditi
         SignalPreprocessor().prepare(state("ecg", 500, 12801/500, condition=condition))
 
 
-def test_budgets_respect_spotr_actual_capacity():
+def test_budgets_respect_encoder_capacity():
     with pytest.raises(ValueError, match="128 channels"):
         PreparationConfig(max_channels=129)
     with pytest.raises(ValueError, match="between 2 and 12800"):

@@ -1,4 +1,4 @@
-"""Validate and clean one aligned native-rate recording for SPOTR."""
+"""Validate and clean one aligned native-rate recording for the signal encoder."""
 
 from dataclasses import dataclass, asdict, replace
 import hashlib
@@ -11,30 +11,30 @@ import torch
 
 from .inputs import Channel, UnsupportedSignalError, validate_state
 from .physiology import clean_channel, check_eeg_channels
-from .provenance import PREPARATION_CONTRACT, NATIVE_CONTRACT, SPOTR_MAX_CHANNELS, SPOTR_MAX_SAMPLES
+from .provenance import PREPARATION_CONTRACT, NATIVE_CONTRACT
+from .vendor import signal
 
 
 @dataclass(frozen=True)
 class PreparationConfig:
-    max_channels: int = SPOTR_MAX_CHANNELS
-    max_samples: int = SPOTR_MAX_SAMPLES
+    max_channels: int = signal.MAX_CHANNELS
+    max_samples: int = signal.MAX_SAMPLES
 
     def __post_init__(self):
         if any(isinstance(v, bool) or not isinstance(v, int) or v <= 0 for v in asdict(self).values()):
             raise ValueError("Preparation budgets must be positive integers")
-        if self.max_channels > SPOTR_MAX_CHANNELS:
-            raise ValueError("SPOTR permits at most 128 channels")
-        if not 2 <= self.max_samples <= SPOTR_MAX_SAMPLES:
-            raise ValueError("SPOTR sample budget must be between 2 and 12800")
+        if self.max_channels > signal.MAX_CHANNELS:
+            raise ValueError(f"Encoder permits at most {signal.MAX_CHANNELS} channels")
+        if not signal.MIN_SAMPLES <= self.max_samples <= signal.MAX_SAMPLES:
+            raise ValueError(f"Encoder sample budget must be between {signal.MIN_SAMPLES} and {signal.MAX_SAMPLES}")
 
 
 @dataclass
 class EncoderInput:
     samples: torch.Tensor           # [C,L], the complete aligned recording
-    intervals_s: torch.Tensor        # [1,2], elapsed start/end seconds
 
     def to(self, device):
-        return EncoderInput(self.samples.to(device), self.intervals_s.to(device))
+        return EncoderInput(self.samples.to(device))
 
 
 @dataclass
@@ -55,10 +55,8 @@ class SignalPreprocessor:
                 "native_processing": NATIVE_CONTRACT, "neurokit2": nk.__version__,
                 "numpy": np.__version__, "scipy": scipy.__version__, "signal_condition": ["raw", "processed"],
                 "sampling": "native-no-resampling", "format": "one-aligned-recording",
-                "channel_order": "as-supplied", "minimum_samples": 2,
-                "encoder_max_channels": SPOTR_MAX_CHANNELS, "encoder_max_samples": SPOTR_MAX_SAMPLES,
-                "encoder_normalization": "channel-zscore", "encoder_padding": "zero-to-multiple-of-200",
-                "intervals": "elapsed-start-end-seconds"}
+                "channel_order": "as-supplied", "minimum_samples": signal.MIN_SAMPLES,
+                "encoder": signal.IDENTITY}
 
     def prepare(self, state):
         """Validate all channels and run NeuroKit only on those marked raw."""
@@ -95,9 +93,4 @@ class SignalPreprocessor:
         if prepared.audit.get("preparation") != self.identity():
             raise ValueError("Prepared signal does not match current preprocessing")
         samples = torch.from_numpy(np.stack([c.samples for c in prepared.channels]))
-        duration = len(prepared.channels[0].samples)/prepared.channels[0].rate
-        with np.errstate(over="ignore", invalid="ignore"):
-            intervals = torch.from_numpy(np.asarray([[0, duration]], dtype=np.float32))
-        if not torch.isfinite(intervals).all() or intervals[0, 1] <= 0:
-            raise UnsupportedSignalError("Recording duration cannot be represented in float32 seconds")
-        return EncoderInput(samples, intervals)
+        return EncoderInput(samples)

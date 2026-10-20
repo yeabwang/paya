@@ -27,7 +27,7 @@ result = model.predict(
 Illustrative output:
 
 ```json
-{"choice": "Normal", "probabilities": [0.1, 0.8, 0.1], "confidence": 0.8}
+{"choice": "Normal", "confidence": 0.8, "probabilities": {"Slow": 0.1, "Normal": 0.8, "Fast": 0.1}}
 ```
 
 Each channel requires `sensor_type`, `sampling_rate_hz` and `duration_s`. Rates and durations must be finite positive numbers, with `duration_s = sample_count / sampling_rate_hz`. Supported types are **EEG, iEEG, ECG and PPG**, case-insensitive. Unit and lead fields are not used. All channels in a recording must have the same sampling rate, sample count and start time.
@@ -40,7 +40,9 @@ Each channel requires `sensor_type`, `sampling_rate_hz` and `duration_s`. Rates 
 
 Frozen BioLORD-2023 encodes the question and each choice separately for the head. Only the decision head is trainable. It uses text self-attention, signal cross-attention, feed-forward layers and a shared candidate scorer.
 
-The entire recording enters SPOTR once as `[1,C,L]`, in supplied channel order, and returns one global `[1,512]` embedding. Ten seconds of PPG at 125 Hz enters as `[1,1,1250]`; six seconds at 65 Hz enters as `[1,1,390]`. There is no grouping, splitting or overlap. Internal zero padding follows the pretrained implementation; the head receives the real duration through elapsed `[0,duration_s]` encoding.
+The entire recording enters the signal encoder once as `[1,C,L]`, in supplied channel order, and returns one global `[1,512]` embedding. Ten seconds of PPG at 125 Hz enters as `[1,1,1250]`; six seconds at 65 Hz enters as `[1,1,390]`. There is no grouping, splitting or overlap. The head receives the signal embedding and separate question/choice embeddings, without metadata or elapsed-time features.
+
+Vendor identity, checkpoint loading, capacity limits and token extraction live in [paya/vendor/spotr.py](paya/vendor/spotr.py). Shared code uses `SignalEncoder`; configuration and bundles identify its assets explicitly as `spotr: third-party/spotr`. Probabilities are keyed by the exact choice strings; confidence equals the chosen choice's probability.
 
 Inputs must contain **1–128 channels and 2–12,800 samples per channel**. Longer recordings and mismatched channel rates are rejected. Raw filters can require more samples. Acceptance does not establish physiological sufficiency. SPOTR removes absolute amplitude and level, and its published downstream preparation uses 200 Hz; native-rate accuracy requires task-specific evaluation. See [architecture and dimensions](docs/architecture-fix.md), [signal preparation](docs/preprocessing.md) and [training and W&B](docs/training.md).
 
@@ -55,6 +57,6 @@ python -m pytest -q -m "not integration" --basetemp cache/pytest-unit
 python -m pytest -q -m integration --basetemp cache/pytest-integration
 ```
 
-SPOTR and BioLORD need local assets and `source.json` checksum records at the paths in [config/paya.yaml](config/paya.yaml). The SPOTR asset command verifies the pinned upstream checkpoint before converting it to safetensors. The integration test exercises real frozen weights and writes `artifacts/architecture-shapes.json`.
+The signal and text encoders need local assets and `source.json` checksum records at the paths in [config/paya.yaml](config/paya.yaml). The asset command verifies the pinned upstream checkpoint before converting it to safetensors. The integration test exercises real frozen weights and writes `artifacts/architecture-shapes.json`.
 
 Paya versions are defined in [paya/provenance.py](paya/provenance.py): `v1`, Python package `1.0.0`. Accuracy, calibration, generalization and latency require trained weights and independent evaluation.
