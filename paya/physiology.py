@@ -70,7 +70,7 @@ def clean_channel(channel):
              "minimum": float(raw.min()), "maximum": float(raw.max())}
     values = raw
     powerline = channel.metadata.get("powerline_hz", 0)
-    if powerline and kind in ("ecg", "eeg", "emg"):
+    if powerline and kind in ("ecg", "eeg", "ieeg"):
         if powerline+1 >= rate/2:
             raise UnsupportedSignalError("Declared powerline band is outside the native Nyquist limit")
         # NeuroKit selects a narrow band-stop when lowcut exceeds highcut.
@@ -95,49 +95,16 @@ def clean_channel(channel):
             _observe(audit, "beats", lambda: _beats(audit, detection, rate, kind))
         audit["cleaning"] = "broad: DC-preserving low-pass <=40 Hz; detection: Elgendi 0.5-8 Hz when native rate permits"
 
-    elif kind == "eda":
-        broad = nk.eda_clean(values, sampling_rate=rate, method="neurokit" if rate > 6 else "none")
-        audit["cleaning"] = "NeuroKit 3 Hz low-pass" if rate > 6 else "native <=6 Hz: no added low-pass"
-        if rate > 0.125 and len(values) > 18 and not audit["flatline"]:
-            components = nk.eda_phasic(broad, sampling_rate=rate, method="highpass", cutoff=0.05)
-            detection = components["EDA_Phasic"].to_numpy()
-            def responses():
-                _, info = nk.eda_peaks(detection, sampling_rate=rate, method="neurokit", amplitude_min=0.1)
-                return {"method": "highpass-0.05Hz/neurokit", **_events(info, ["SCR_Onsets", "SCR_Peaks"], rate)}
-            _observe(audit, "responses", responses)
-
-    elif kind == "respiration":
-        broad = _filter(values, rate, high=min(3, 0.4*rate))
-        audit["cleaning"] = "broad: DC-preserving low-pass <=3 Hz; detection: khodadad2018"
-        if rate > 6:
-            detection = nk.rsp_clean(values, sampling_rate=rate, method="khodadad2018")
-            def breaths():
-                _, info = nk.rsp_peaks(detection, sampling_rate=rate, method="khodadad2018")
-                return {"method": "khodadad2018", **_events(info, ["RSP_Peaks", "RSP_Troughs"], rate)}
-            _observe(audit, "breaths", breaths)
-
-    elif kind == "emg":
-        if rate <= 50:
-            raise UnsupportedSignalError("Raw EMG needs a native rate above 50 Hz for the 20 Hz high-pass")
-        broad = _filter(values, rate, low=20, high=min(450, 0.4*rate))
-        envelope = np.maximum(0, _filter(np.abs(broad), rate, high=8, order=2))
-        audit["cleaning"] = "20-min(450,0.4*fs) Hz band-pass; rectified 8 Hz envelope for activation checks only"
-        def activations():
-            _, info = nk.emg_activation(emg_amplitude=envelope, sampling_rate=rate, method="threshold")
-            return {"method": "rectified-8Hz/threshold", **_events(info, ["EMG_Onsets", "EMG_Offsets"], rate)}
-        _observe(audit, "activation", activations)
-
     elif kind == "eeg":
         broad = _filter(values, rate, high=min(100, 0.4*rate))
         audit["cleaning"] = "DC-preserving low-pass <=100 Hz; supplied reference retained"
 
-    elif kind in ("accelerometer", "gyroscope"):
-        broad = _filter(values, rate, high=min(40, 0.4*rate))
-        audit["cleaning"] = "DC-preserving low-pass <=40 Hz; signed axes and gravity retained"
+    elif kind == "ieeg":
+        broad = _filter(values, rate, high=0.4*rate)
+        audit["cleaning"] = "DC-preserving low-pass at 0.4*fs; supplied intracranial reference retained"
 
-    else:  # temperature, already validated against the nine supported types
-        broad = nk.signal_smooth(np.pad(values, 1, mode="edge"), kernel="median", size=3)[1:-1]
-        audit["cleaning"] = "three-observation median; absolute level and trend retained"
+    else:
+        raise UnsupportedSignalError(f"Unsupported sensor type: {kind}")
 
     if broad.shape != raw.shape or not np.isfinite(broad).all():
         raise UnsupportedSignalError(f"Invalid {kind} waveform after native-rate cleaning")
@@ -146,19 +113,15 @@ def clean_channel(channel):
 
 def check_eeg_channels(channels, waveforms, audits):
     """Flag aligned EEG channel outliers without removing channels."""
-    groups = {}
-    for i, c in enumerate(channels):
-        if c.sensor_type == "eeg":
-            groups.setdefault((c.rate, len(c.samples), c.metadata.get("reference")), []).append(i)
-    for indices in groups.values():
-        if len(indices) < 4:
-            continue
-        report = {}
-        _observe(report, "channels", lambda: {"bad_indices": nk.eeg_badchannels(
-            np.stack([waveforms[i] for i in indices]))[0]})
-        result = report["channels"]
-        for local, i in enumerate(indices):
-            audits[i]["channel_quality"] = {"status": result["status"], "method": "eeg_badchannels",
-                                           "flagged": local in result.get("bad_indices", [])}
-            if result["status"] == "unavailable":
-                audits[i]["channel_quality"]["reason"] = result["reason"]
+    indices = [i for i, c in enumerate(channels) if c.sensor_type == "eeg"]
+    if len(indices) < 4 or len({channels[i].metadata.get("reference") for i in indices}) != 1:
+        return
+    report = {}
+    _observe(report, "channels", lambda: {"bad_indices": nk.eeg_badchannels(
+        np.stack([waveforms[i] for i in indices]))[0]})
+    result = report["channels"]
+    for local, i in enumerate(indices):
+        audits[i]["channel_quality"] = {"status": result["status"], "method": "eeg_badchannels",
+                                       "flagged": local in result.get("bad_indices", [])}
+        if result["status"] == "unavailable":
+            audits[i]["channel_quality"]["reason"] = result["reason"]

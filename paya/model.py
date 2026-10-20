@@ -100,27 +100,19 @@ class PayaModel(nn.Module):
         encoder_input = self.preprocessor.format(prepared)
         with torch.no_grad():
             encoded = self.encoder(encoder_input.to(self.device))
-        if encoded.values.ndim != 2 or encoded.values.shape[-1] != 512 or not torch.isfinite(encoded.values).all():
-            raise ValueError("Encoder must return finite SPOTR global vectors [M,512]")
+        if encoded.values.shape != (1, 512) or not torch.isfinite(encoded.values).all():
+            raise ValueError("Encoder must return one finite SPOTR global vector [1,512]")
         intervals = encoded.intervals_s
         if (intervals.shape != (len(encoded.values), 2) or not torch.isfinite(intervals).all()
                 or (intervals[:, 0] < 0).any() or (intervals[:, 1] <= intervals[:, 0]).any()):
             raise ValueError("Invalid elapsed interval times")
-        if not 1 <= len(encoded.values) <= self.preprocessor.config.max_signal_tokens:
-            raise ValueError("Invalid encoded token budget")
         return EncodedSignal(encoded.values.float().detach(), intervals.float().detach())
 
     def forward(self, batch, cache=None):
         encoded = [cache.get_or_encode(self, state) if cache else self.encode(state) for state in batch.states]
-        tokens = max(len(e.values) for e in encoded)
-        signal = batch.question.new_zeros(len(encoded), tokens, 512)
-        intervals = batch.question.new_zeros(len(encoded), tokens, 2)
-        mask = torch.zeros(len(encoded), tokens, dtype=torch.bool, device=self.device)
-        for i, value in enumerate(encoded):
-            length = len(value.values)
-            signal[i, :length] = value.values.to(self.device)
-            intervals[i, :length] = value.intervals_s.to(self.device)
-            mask[i, :length] = True
+        signal = torch.stack([e.values.to(self.device) for e in encoded])
+        intervals = torch.stack([e.intervals_s.to(self.device) for e in encoded])
+        mask = torch.ones(len(encoded), 1, dtype=torch.bool, device=self.device)
         logits = self.head(signal, mask, intervals, batch.question, batch.criteria, batch.criteria_mask)
         return {"logits": logits, "criteria_mask": batch.criteria_mask}
 

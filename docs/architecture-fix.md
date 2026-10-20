@@ -7,9 +7,9 @@ flowchart TD
     S[Signal + required metadata] --> V[Validate samples, rate, duration and condition]
     V --> C{signal_condition}
     C -->|raw| N[Native-rate NeuroKit cleaning]
-    C -->|processed| F[Group aligned native channels and form windows]
+    C -->|processed| F[Stack complete recording in supplied channel order]
     N --> F
-    F --> E[Frozen SPOTR Base]
+    F --> E[Frozen SPOTR Base: one encoder call]
     F --> I[Elapsed start/end seconds]
     E --> H[Trainable shared decision head]
     I --> H
@@ -27,15 +27,15 @@ The public arguments are `state`, `question` and ordered `criteria`. Metadata co
 
 ## Native signal formatting
 
-Preserve supplied channel order. Aligned channels with the same native sampling rate and sample count form one multichannel group; different-rate groups are encoded separately. No resampling is performed.
+Accept EEG, iEEG, ECG and PPG. All channels must have the same native sampling rate, sample count and start time. Preserve supplied channel order and stack the entire recording as `[1,C,L]`. No resampling, grouping or window splitting is performed.
 
-For up to 12,800 samples, encode the complete group once. Longer groups use contiguous 12,800-sample windows and, when needed, a final complete window ending at the last sample. That last window can overlap its predecessor. This follows pretrained positional capacity, not a physiological duration rule. Every real sample is covered. SPOTR internally normalizes each channel before zero padding to a multiple of 200; intervals describe the unpadded samples.
+Encode the complete recording once. SPOTR internally normalizes each channel before zero padding to a multiple of 200. Recordings exceeding 12,800 samples per channel are rejected before cleaning or encoding. This follows pretrained positional capacity, not a physiological duration rule. Elapsed `[0,duration_s]` describes the unpadded recording and does not cause another encoder call.
 
-Equal-shape windows are stacked as `[G,C,L]`, restoring original embedding order afterward. Each encoder batch contains at most `128*12800` waveform measurements. Defaults permit 128 channels, 1,000,000 samples per channel and 128 global embeddings per request. Each channel needs at least two samples for the upstream sample standard deviation; raw filters may require more. These bounds do not establish suitability for a question.
+Defaults permit 128 channels and 12,800 samples per channel. Lower resource limits can be configured. Each channel needs at least two samples for the upstream sample standard deviation; raw filters may require more. These bounds do not establish suitability for a question.
 
 ## Frozen encoders
 
-`B` is request batch size; `M` is the maximum number of signal embeddings per request; `K` is the maximum candidate count; `S=K+1` counts the question and candidates. `G` counts equal-shape windows, `C` channels, and `N=2*ceil(L/200)` temporal patches.
+`B` is request batch size; `M=1` is the number of signal embeddings per request; `K` is the maximum candidate count; `S=K+1` counts the question and candidates. Each encoder call has `G=1`, `C` channels and `N=2*ceil(L/200)` temporal patches. A batch of distinct recordings encodes each recording once.
 
 ### SPOTR Base
 
@@ -52,11 +52,11 @@ The pinned checkpoint has width 512, patch size 100, eight attention heads and 1
 | Prepend global token and concatenate both sequences | `[G,C,512]`, `[G,N,512]` | `[G,1+C+N,512]` |
 | Twelve pre-RMSNorm self-attention / gated feed-forward blocks | `[G,1+C+N,512]` | `[G,1+C+N,512]` |
 | Select global token | `[G,1+C+N,512]` | `[G,512]` |
-| Pack embeddings and their elapsed intervals | Variable window groups | `[B,M,512]`, `[B,M,2]`, mask `[B,M]` |
+| Stack one global embedding and real interval per recording | `[1,512]`, `[1,2]` per recording | `[B,1,512]`, `[B,1,2]`, mask `[B,1]` |
 
 Each attention head has width 64. Transformer feed-forward layers use separate gate/up projections 512→2048, SiLU gating, and a 2048→512 down projection, with residual additions. No output-width adapter is needed. Learned channel positions make supplied channel order significant.
 
-Published downstream processing uses 200 Hz and a 50/60 Hz notch; Paya preserves declared native rates and applies a notch only when requested. The paper evaluates EEG, iEEG, ECG and PPG, so acceptance of the nine API signal types does not establish pretrained coverage. Internal z-scoring removes absolute level and scale: absolute temperature or voltage cannot be recovered from normalized embeddings alone. Native-rate accuracy, these modalities and calibration require independent outcome evaluation.
+Published downstream processing uses 200 Hz and a 50/60 Hz notch; Paya preserves declared native rates and applies a notch only when requested. Supported types match the paper's EEG, iEEG, ECG and PPG evaluation domains. Internal z-scoring removes absolute level and scale: absolute voltage or optical intensity cannot be recovered from normalized embeddings alone. Native-rate accuracy and calibration require independent outcome evaluation.
 
 ### BioLORD-2023
 
@@ -81,7 +81,7 @@ The default head has width 256, two residual blocks, four attention heads of wid
 | Final LayerNorm and shared candidate scorer | `[B,K,256]` | `[B,K]` logits |
 | Masked softmax after division by fitted temperature | `[B,K]` | `[B,K]` probabilities |
 
-Dropout defaults to 0.1. The interval encoding allocates half its dimensions to each endpoint, measured from the recording start in seconds. Adding time to values preserves time information even with a single signal token; adding it only to keys would have no effect in that case. There are no wavelet-scale or CLS/frame coordinates. Batch padding is added after signal encoding and masked at the head; SPOTR's internal waveform padding follows its pretrained forward pass.
+Dropout defaults to 0.1. The interval encoding allocates half its dimensions to each endpoint: start is zero and end is the real recording duration. Adding time to values preserves duration information with the single signal token; adding it only to keys would have no effect. There are no wavelet-scale or CLS/frame coordinates. Candidate padding is masked at the head; SPOTR's internal waveform padding follows its pretrained forward pass.
 
 Choice is the highest-probability criterion; ties use criterion text as a deterministic key. Probabilities retain input order, and confidence is the chosen probability. Calibration describes groups of predictions and does not guarantee that an individual answer is correct.
 
@@ -89,6 +89,6 @@ Choice is the highest-probability criterion; ties use criterion text as a determ
 
 Only the decision head is optimized with candidate cross-entropy. Selection NLL chooses the best checkpoint; calibration fits one global temperature on separate outcomes. Further training invalidates calibration. Frozen encoders remain in evaluation mode.
 
-[paya/provenance.py](../paya/provenance.py) defines unchanged Paya `v1` version identifiers and pinned upstream revisions. Structural identities distinguish variable-length formatting and elapsed-interval attention. Caches, checkpoints and exports require matching identities; no compatibility path loads retired architectures. See [training](training.md).
+[paya/provenance.py](../paya/provenance.py) defines unchanged Paya `v1` version identifiers and pinned upstream revisions. Structural identities bind the four supported types, single-recording format and elapsed-duration encoding. Caches, checkpoints and exports require matching identities; no compatibility path loads retired architectures. See [training](training.md).
 
 Sources: [SPOTR implementation](https://github.com/5GYYYYY/SPOTR), [checkpoint](https://huggingface.co/5gyyyyy/SPOTR), [SPOTR paper](https://arxiv.org/abs/2606.21973), [BioLORD](https://huggingface.co/FremyCompany/BioLORD-2023), [NeuroKit](https://neuropsychology.github.io/NeuroKit/).

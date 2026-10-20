@@ -19,8 +19,6 @@ def threads():
 def state(kind="ecg", rate=500, duration=6, condition=None):
     t = np.arange(round(rate*duration))/rate
     waveform = np.sin(2*np.pi*min(1.3, rate/8)*t) + 0.05*np.cos(2*np.pi*min(7, rate/4)*t)
-    if kind == "temperature":
-        waveform = 37 + 0.01*t
     metadata = {"sensor_type": kind, "sampling_rate_hz": rate, "duration_s": len(t)/rate}
     if condition is not None:
         metadata["signal_condition"] = condition
@@ -51,7 +49,7 @@ class EncoderDouble(nn.Module):
 
     def forward(self, encoder_input):
         self.calls += 1
-        values = self.base(torch.stack([frame.mean().reshape(1) for frame in encoder_input.frames]))
+        values = self.base(encoder_input.samples.mean().reshape(1, 1))
         return EncodedSignal(values, encoder_input.intervals_s)
 
 

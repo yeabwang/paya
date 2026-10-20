@@ -73,6 +73,21 @@ def test_feature_cache_hit_skips_formatting_and_binds_condition_and_rate(model, 
         assert "expert" not in payload["binding"]
 
 
+def test_cache_rejects_multiple_signal_embeddings(model, tmp_path):
+    from paya.features import tensor_digest
+    cache = FeatureCache(tmp_path)
+    prepared = model.preprocessor.prepare(state(condition="processed"))
+    cache.get_or_encode(model, prepared)
+    path = next(tmp_path.glob("*.pt"))
+    payload = torch.load(path, weights_only=True)
+    payload["values"] = payload["values"].expand(2, -1).clone()
+    payload["intervals_s"] = payload["intervals_s"].expand(2, -1).clone()
+    payload["digest"] = tensor_digest(payload["values"], payload["intervals_s"])
+    torch.save(payload, path)
+    with pytest.raises(ValueError, match="shape mismatch"):
+        cache.get_or_encode(model, prepared)
+
+
 def test_channel_order_is_bound_to_prepared_and_cached_features(model, tmp_path):
     request = state(condition="processed")
     request["signals"].append(state("ppg", condition="processed")["signals"][0])

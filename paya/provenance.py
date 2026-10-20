@@ -26,9 +26,10 @@ TEXT_IDENTITY = {"contract": TEXT_CONTRACT, "model_id": TEXT_ID, "revision": TEX
                  "pooling": "sentence-transformers-default", "normalize": True, "dimension": 768}
 
 ARCHITECTURE = {"signal_encoder": SPOTR_ID, "encoder_code_revision": SPOTR_CODE_REVISION,
-                "pipeline": ["validate", "clean_raw_only", "native_framing", "frozen_encoding", "decision_head"],
+                "pipeline": ["validate", "clean_raw_only", "stack_channels", "frozen_encoding", "decision_head"],
                 "signal_width": 512, "sampling": "declared-native-rate",
-                "framing": "native-aligned-channel-groups-capacity-windows", "minimum_samples": 2,
+                "format": "one-aligned-recording", "minimum_samples": 2,
+                "signal_types": ["eeg", "ieeg", "ecg", "ppg"], "signal_tokens": 1,
                 "channel_order": "as-supplied", "signal_output": "global-token",
                 "encoder_config": SPOTR_CONFIG,
                 "required_metadata": ["sensor_type", "sampling_rate_hz", "duration_s"],

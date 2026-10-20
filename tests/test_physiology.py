@@ -5,7 +5,6 @@ import json
 import neurokit2 as nk
 import numpy as np
 import pytest
-import torch
 
 from paya.inputs import validate_state
 from paya.physiology import clean_channel
@@ -69,71 +68,26 @@ def test_ppg_cleaning_keeps_intensity_and_finds_native_pulses():
     assert audit["template_quality"]["status"] == "available"
 
 
-def test_low_rate_eda_keeps_tonic_level_and_detects_responses():
-    rate = 4
-    t = np.arange(128*rate)/rate
-    values = 5 + 0.005*t
-    for onset in (10, 35):
-        elapsed = np.maximum(0, t-onset)
-        values += np.exp(-elapsed/3)-np.exp(-elapsed/0.5)
-    broad, audit = clean_channel(validate_state(request("eda", values, rate))[0])
-    np.testing.assert_allclose(broad, values, atol=5e-7, rtol=0)
-    peaks = audit["responses"]["SCR_Peaks"]
-    assert any(10 < peak < 15 for peak in peaks) and any(35 < peak < 40 for peak in peaks)
-    processor = SignalPreprocessor()
-    cleaned = processor.prepare(request("eda", values, rate))
-    assert torch.stack(processor.format(cleaned).frames).mean() > 5
-    json.dumps(cleaned.audit, allow_nan=False)
+def test_ieeg_native_bandwidth_and_declared_notch_are_retained():
+    rate = 1000
+    t = np.arange(8*rate)/rate
+    values = 2+0.5*np.sin(2*np.pi*160*t)+0.1*np.sin(2*np.pi*60*t)
+    broad, audit = clean_channel(validate_state(request("ieeg", values, rate, powerline_hz=60))[0])
+    assert broad.shape == values.shape and np.isfinite(broad).all()
+    assert abs(broad.mean()-2) < 0.005
+    assert amplitude(broad, 160, rate) > 0.48
+    assert amplitude(broad, 60, rate) < 0.01
+    assert audit["powerline_hz"] == 60 and "beats" not in audit
 
 
-def test_respiration_preserves_baseline_and_tracks_complete_cycles():
-    rate = 32
-    t = np.arange(60*rate)/rate
-    values = 3+0.4*np.sin(2*np.pi*0.2*t)+0.1*np.sin(2*np.pi*8*t)
-    broad, audit = clean_channel(validate_state(request("respiration", values, rate))[0])
-    assert abs(broad.mean()-3) < 0.01
-    assert amplitude(broad, 0.2, rate) > 0.38
-    assert amplitude(broad, 8, rate) < 0.005
-    peaks = np.asarray(audit["breaths"]["RSP_Peaks"])
-    assert len(peaks) >= 10
-    np.testing.assert_allclose(np.diff(peaks)[1:-1], 5, atol=2/rate, rtol=0)
-
-
-def test_emg_envelope_checks_use_the_actual_native_rate():
-    onsets = []
-    for rate in (500, 1000, 2000):
-        t = np.arange(8*rate)/rate
-        active = ((t >= 2) & (t < 3)) | ((t >= 5) & (t < 6))
-        values = (0.02+active*2)*np.sin(2*np.pi*80*t)
-        broad, audit = clean_channel(validate_state(request("emg", values, rate))[0])
-        assert np.std(broad[(t > 2.2) & (t < 2.8)]) > 1.3  # retain the 80 Hz carrier
-        found = np.asarray(audit["activation"]["EMG_Onsets"])
-        assert len(found) == 2
-        np.testing.assert_allclose(found, [2, 5], atol=0.1, rtol=0)
-        onsets.append(found)
-    np.testing.assert_allclose(onsets[0], onsets[-1], atol=0.02, rtol=0)
-
-
-def test_temperature_level_trend_and_isolated_spike():
-    processor = SignalPreprocessor()
-    constant = processor.prepare(request("temperature", [37.0]*512, 1))
-    torch.testing.assert_close(torch.stack(processor.format(constant).frames), torch.full((1, 1, 512), 37.0), atol=0, rtol=0)
-    t = np.arange(32)
-    values = 36.5+0.01*t
-    values[15] += 5
-    broad, audit = clean_channel(validate_state(request("temperature", values, 1))[0])
-    np.testing.assert_allclose(broad[2:-2], (36.5+0.01*t)[2:-2], atol=0.011, rtol=0)
-    assert audit["maximum"] > 40 and broad.max() < 37
-
-
-@pytest.mark.parametrize("kind,unit,level", [("accelerometer", "m/s2", 9.80665), ("gyroscope", "rad/s", -0.4)])
-def test_inertial_cleaning_preserves_signed_dc_and_motion(kind, unit, level):
-    rate = 100
-    t = np.arange(10*rate)/rate
-    values = level+0.3*np.sin(2*np.pi*3*t)
-    broad, _ = clean_channel(validate_state(request(kind, values, rate, axis="z"))[0])
-    assert abs(broad.mean()-level) < 1e-4
-    assert amplitude(broad, 3, rate) > 0.29
+def test_scalp_eeg_channel_quality_is_not_applied_to_ieeg(monkeypatch):
+    def unexpected(*args, **kwargs):
+        pytest.fail("Scalp EEG outlier checks must not be applied to iEEG")
+    monkeypatch.setattr(nk, "eeg_badchannels", unexpected)
+    channel = state("ieeg", 500, 6)["signals"][0]
+    prepared = SignalPreprocessor().prepare({"signals": [channel]*4})
+    assert len(prepared.channels) == 4
+    assert all("channel_quality" not in audit for audit in prepared.audit["quality"])
 
 
 def test_failed_detector_records_unavailability_without_destroying_waveform(monkeypatch):
@@ -167,24 +121,10 @@ def test_eeg_quality_flags_do_not_remove_or_rereference_channels():
     assert len(prepared.audit["quality"]) == 6
     for audit in prepared.audit["quality"]:
         assert audit["channel_quality"]["status"] == "available"
-    frames = processor.format(prepared).frames
-    assert len(frames) == 1 and frames[0].shape == (6, 2048)
+    samples = processor.format(prepared).samples
+    assert samples.shape == (6, 2048)
     assert len(prepared.channels) == 6
     json.dumps(prepared.audit, allow_nan=False)
-
-
-def test_five_minute_ecg_is_fully_covered_without_time_compression():
-    processor = SignalPreprocessor()
-    prepared = processor.prepare(request("ecg", ecg(300)[0], 500))
-    encoded_input = processor.format(prepared)
-    assert [tuple(frame.shape) for frame in encoded_input.frames] == [(1, 12800)]*12
-    assert encoded_input.intervals_s[0, 0] == 0 and encoded_input.intervals_s[-1, 1] == 300
-    coverage = np.zeros(len(prepared.channels[0].samples), dtype=bool)
-    for frame, interval in zip(encoded_input.frames, encoded_input.intervals_s):
-        start = round(float(interval[0])*500)
-        np.testing.assert_array_equal(frame[0], prepared.channels[0].samples[start:start+12800])
-        coverage[start:start+12800] = True
-    assert coverage.all()
 
 
 @pytest.mark.parametrize("frequency", ["50", True, None, 45, float("nan")])

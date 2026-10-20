@@ -30,7 +30,7 @@ python -m paya.evaluate --config config/paya.yaml --checkpoint runs/paya-v1/cali
 python -m paya.export --config config/paya.yaml --checkpoint runs/paya-v1/calibrated.pt --output artifacts/paya-v1
 ```
 
-Raw channels are cleaned at their declared rate; processed channels bypass NeuroKit. Frozen SPOTR jointly encodes aligned same-rate channels in supplied order and returns one 512-dimensional global token per window. Frozen BioLORD independently encodes the question and choices. Only the shared decision head is trained, using candidate cross-entropy. Every epoch is eligible for `best.pt`, selected by independent selection NLL. Calibration then fits one global temperature on separate outcomes; it is bound to the decision-head weights and invalidated by further training.
+Raw channels are cleaned at their declared rate; processed channels bypass NeuroKit. Frozen SPOTR encodes each complete recording once in supplied channel order and returns one 512-dimensional global token. Supported types are EEG, iEEG, ECG and PPG; channels within a recording must share rate, length and start time. Frozen BioLORD independently encodes the question and choices. Only the shared decision head is trained, using candidate cross-entropy. Every epoch is eligible for `best.pt`, selected by independent selection NLL. Calibration then fits one global temperature on separate outcomes; it is bound to the decision-head weights and invalidated by further training.
 
 The run directory holds `history.jsonl`, resumable `last.pt` and `best.pt`. Resume with the same model, datasets and optimizer settings:
 

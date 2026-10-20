@@ -30,10 +30,8 @@ class FeatureCache:
             if payload.get("binding") != binding:
                 raise ValueError("Frozen feature cache contract mismatch")
             values, intervals = payload["values"], payload["intervals_s"]
-            if values.ndim != 2 or values.shape[1] != 512 or intervals.shape != (len(values), 2):
+            if values.shape != (1, 512) or intervals.shape != (1, 2):
                 raise ValueError("Frozen feature cache shape mismatch")
-            if not 1 <= len(values) <= model.preprocessor.config.max_signal_tokens:
-                raise ValueError("Frozen feature cache exceeds the token budget")
             if values.dtype != torch.float32 or intervals.dtype != torch.float32:
                 raise ValueError("Frozen feature cache must preserve FP32 computation")
             if not torch.isfinite(values).all() or not torch.isfinite(intervals).all():

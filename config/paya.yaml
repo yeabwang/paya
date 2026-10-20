@@ -5,8 +5,7 @@ assets:
   text: third-party/biolord
 preparation:
   max_channels: 128
-  max_samples: 1000000
-  max_signal_tokens: 128
+  max_samples: 12800
 head:
   width: 256
   layers: 2

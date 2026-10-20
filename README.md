@@ -30,19 +30,19 @@ Illustrative output:
 {"choice": "Normal", "probabilities": [0.1, 0.8, 0.1], "confidence": 0.8}
 ```
 
-Each channel requires `sensor_type`, `sampling_rate_hz` and `duration_s`. Rates and durations must be finite positive numbers, with `duration_s = sample_count / sampling_rate_hz`. Supported types are ECG, EEG, accelerometer, gyroscope, PPG, EDA, respiration, temperature and EMG. Unit and lead fields are not used; samples retain their supplied amplitude scale. Channels must cover the same measured interval; different rates require explicit matching `start_time_s` values.
+Each channel requires `sensor_type`, `sampling_rate_hz` and `duration_s`. Rates and durations must be finite positive numbers, with `duration_s = sample_count / sampling_rate_hz`. Supported types are **EEG, iEEG, ECG and PPG**, case-insensitive. Unit and lead fields are not used. All channels in a recording must have the same sampling rate, sample count and start time.
 
 `signal_condition` accepts `raw` (default) or `processed`. Raw channels receive native-rate NeuroKit cleaning. Processed channels bypass NeuroKit. Neither path resamples the signal. SPOTR then applies its pretrained per-channel z-score normalization internally.
 
 ## Architecture
 
-`signal + metadata → validate → clean raw channels only → group aligned native channels → frozen SPOTR → shared decision head`
+`signal + metadata → validate → clean raw channels only → stack channels → frozen SPOTR once → shared decision head`
 
 Frozen BioLORD-2023 encodes the question and each choice separately for the head. Only the decision head is trainable. It uses text self-attention, signal cross-attention, feed-forward layers and a shared candidate scorer.
 
-Same-rate channels are encoded together in supplied order. SPOTR accepts `[G,C,L]` and returns one global `[G,512]` embedding per window. Ten seconds of PPG at 125 Hz enters as `[1,1,1250]`; six seconds at 65 Hz enters as `[1,1,390]`. Internal zero padding follows the pretrained implementation; elapsed intervals always describe real samples. Longer recordings use windows within the 12,800-sample checkpoint capacity, covering every sample.
+The entire recording enters SPOTR once as `[1,C,L]`, in supplied channel order, and returns one global `[1,512]` embedding. Ten seconds of PPG at 125 Hz enters as `[1,1,1250]`; six seconds at 65 Hz enters as `[1,1,390]`. There is no grouping, splitting or overlap. Internal zero padding follows the pretrained implementation; the head receives the real duration through elapsed `[0,duration_s]` encoding.
 
-The numerical minimum is two samples per channel, with at most 128 channels. Raw filters and resource budgets impose additional limits. Acceptance does not establish physiological sufficiency. SPOTR removes absolute amplitude and level, and its published downstream preparation uses 200 Hz; native-rate use and the nine accepted signal types require task-specific evaluation. See [architecture and dimensions](docs/architecture-fix.md), [signal preparation](docs/preprocessing.md) and [training and W&B](docs/training.md).
+Inputs must contain **1–128 channels and 2–12,800 samples per channel**. Longer recordings and mismatched channel rates are rejected. Raw filters can require more samples. Acceptance does not establish physiological sufficiency. SPOTR removes absolute amplitude and level, and its published downstream preparation uses 200 Hz; native-rate accuracy requires task-specific evaluation. See [architecture and dimensions](docs/architecture-fix.md), [signal preparation](docs/preprocessing.md) and [training and W&B](docs/training.md).
 
 ## Install and verify
 

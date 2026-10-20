@@ -21,12 +21,15 @@ def test_real_spotr_and_biolord_shapes_and_gradients(monkeypatch):
     hook = model.encoder.core.register_forward_hook(lambda m, x, y: shapes.append((list(x[0].shape), list(y.shape))))
     for kind, rate, duration, expected in [("ppg", 125, 10, [1, 1, 1250]),
                                           ("ppg", 65, 6, [1, 1, 390]),
-                                          ("temperature", 1, 2, [1, 1, 2]),
+                                          ("ieeg", 1000, 2, [1, 1, 2000]),
+                                          ("eeg", 1, 2, [1, 1, 2]),
                                           ("ppg", 200, 64, [1, 1, 12800])]:
         prepared = model.preprocessor.prepare(state(kind, rate, duration, condition="processed"))
         frames = model.preprocessor.format(prepared)
-        assert list(torch.stack(frames.frames).shape) == expected
+        assert list(frames.samples.unsqueeze(0).shape) == expected
+        count = len(shapes)
         encoded = model.encode(prepared)
+        assert len(shapes) == count+1
         assert encoded.values.shape == (expected[0], 512) and encoded.intervals_s.shape == (expected[0], 2)
         assert torch.isfinite(encoded.values).all()
         assert shapes[-1] == (expected, [1, 2+2*((expected[-1]+199)//200), 512])
@@ -35,23 +38,19 @@ def test_real_spotr_and_biolord_shapes_and_gradients(monkeypatch):
             "intervals_s": encoded.intervals_s.tolist()}
     joint = state(condition="processed")
     joint["signals"].append(state("eeg", condition="processed")["signals"][0])
+    count = len(shapes)
     encoded_joint = model.encode(model.preprocessor.prepare(joint))
+    assert len(shapes) == count+1
     assert encoded_joint.values.shape == (1, 512)
     assert shapes[-1] == ([1, 2, 3000], [1, 33, 512])
-    mixed_rate = state("ppg", 125, 10, condition="processed")
-    mixed_rate["signals"].append(state("ecg", 200, 10, condition="processed")["signals"][0])
-    for channel in mixed_rate["signals"]:
-        channel["metadata"]["start_time_s"] = 0
-    encoded_mixed = model.encode(model.preprocessor.prepare(mixed_rate))
-    assert encoded_mixed.values.shape == (2, 512)
-    assert shapes[-2:] == [([1, 1, 1250], [1, 16, 512]), ([1, 1, 2000], [1, 22, 512])]
-    hook.remove()
     batch = model.make_batch([state("ppg", 125, 10, condition="processed")],
                              ["Which category describes this signal?"], [["Low", "Normal", "High"]])
     with torch.no_grad():
         result = model(batch)
     assert result["logits"].shape == (1, 3) and torch.isfinite(result["logits"]).all()
+    count = len(shapes)
     predicted = model.predict(state(), "Which category?", ["Slow", "Normal", "Fast"])
+    assert len(shapes) == count+1
     assert list(predicted) == ["choice", "probabilities", "confidence"]
     assert len(predicted["probabilities"]) == 3 and abs(sum(predicted["probabilities"])-1) < 1e-6
     model.train()
@@ -64,7 +63,7 @@ def test_real_spotr_and_biolord_shapes_and_gradients(monkeypatch):
         model.text_encoder.encode(["question "*200])
     multichannel = state()
     multichannel["signals"].append(state("eeg")["signals"][0])
-    mixed = model.make_batch([multichannel, state("temperature", 1, 64, condition="processed")],
+    mixed = model.make_batch([multichannel, state("ieeg", 1000, 2, condition="processed")],
                              ["Which category?", "Which category?"],
                              [["Slow", "Fast"], ["Low", "Normal", "High", "Uncertain"]])
     model.eval()
@@ -86,8 +85,9 @@ def test_real_spotr_and_biolord_shapes_and_gradients(monkeypatch):
               "role_embeddings": list(model.head.roles.shape), "decision_logits": list(result["logits"].shape),
               "mixed_batch_logits": [2, 4],
               "joint_channel_global": list(encoded_joint.values.shape),
-              "mixed_rate_globals": list(encoded_mixed.values.shape),
+              "encoder_calls_per_recording": 1,
               "trainable_parameters": sum(p.numel() for p in model.trainable_parameters()),
               "gradient_boundary": "decision head only; no optimizer step", "output_keys": list(predicted)}
     Path("artifacts").mkdir(exist_ok=True)
     Path("artifacts/architecture-shapes.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    hook.remove()

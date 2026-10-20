@@ -59,13 +59,13 @@ def test_stage_order_native_preparation_then_framing_and_encoding(model, monkeyp
     assert events == (["neurokit"] if condition == "raw" else []) + ["format", "spotr"]
 
 
-def test_prepared_signal_reuse_and_mixed_native_rates(model, monkeypatch):
+def test_prepared_signal_reuse(model, monkeypatch):
     request = state("ecg", 10, 60, condition="processed")
-    request["signals"].append(state("temperature", 12, 60, condition="processed")["signals"][0])
+    request["signals"].append(state("ppg", 10, 60, condition="processed")["signals"][0])
     for channel in request["signals"]:
         channel["metadata"]["start_time_s"] = 0
     prepared = model.preprocessor.prepare(request)
-    assert [c.rate for c in prepared.channels] == [10, 12]
+    assert [c.rate for c in prepared.channels] == [10, 10]
     originals = [c.samples.copy() for c in prepared.channels]
     def unexpected(*args, **kwargs):
         pytest.fail("Prepared signals must not be prepared again")
@@ -92,7 +92,7 @@ def test_candidate_permutation_and_audit_invariance(model):
 
 def test_heterogeneous_batch_masks_gradients_and_frozen_boundaries(model):
     model.train()
-    batch = model.make_batch([state(), state("temperature", 1, 512)], ["q", "q2"], [["a", "b"], ["a", "b", "c", "d"]])
+    batch = model.make_batch([state(), state("ieeg", 1000, 2)], ["q", "q2"], [["a", "b"], ["a", "b", "c", "d"]])
     result = model(batch)
     assert result["logits"].shape == (2, 4) and result["logits"][0, 2:].isneginf().all()
     choice_loss(result["logits"], torch.tensor([0, 1]), batch.criteria_mask).backward()
@@ -110,7 +110,7 @@ def test_empty_signal_attention_mask_is_rejected(model):
                    batch.question, batch.criteria, batch.criteria_mask)
 
 
-def test_encoder_wrapper_keeps_native_windows_and_times():
+def test_encoder_wrapper_keeps_native_recording_and_duration():
     from torch import nn
     from paya.preprocessing import SignalPreprocessor
     class Core(nn.Module):
@@ -125,7 +125,7 @@ def test_encoder_wrapper_keeps_native_windows_and_times():
     frames = processor.format(prepared)
     encoded = SPOTREncoder(Core())(frames)
     assert encoded.values.shape == (1, 512) and encoded.intervals_s.shape == (1, 2)
-    torch.testing.assert_close(encoded.values[0], frames.frames[0].mean().expand(512))
+    torch.testing.assert_close(encoded.values[0], frames.samples.mean().expand(512))
     torch.testing.assert_close(encoded.intervals_s, frames.intervals_s)
 
 
@@ -189,7 +189,8 @@ def test_head_ignores_padding_and_preserves_signal_interval_pairs():
     assert padded[0, 2].isneginf()
 
 
-def test_encoder_groups_equal_shapes_bounds_batches_and_restores_order():
+@pytest.mark.parametrize("shape", [(1, 2), (1, 1250), (4, 201), (128, 12800)])
+def test_encoder_runs_once_for_the_complete_recording(shape):
     from torch import nn
     from paya.preprocessing import EncoderInput
     seen = []
@@ -198,13 +199,11 @@ def test_encoder_groups_equal_shapes_bounds_batches_and_restores_order():
             seen.append(tuple(x.shape))
             batch, channels, length = x.shape
             return x.mean((1, 2))[:, None, None].expand(batch, 1+channels+2*((length+199)//200), 512)
-    shapes = [(128, 12800), (1, 201), (128, 12800), (2, 201), (1, 201)]
-    frames = [torch.full(shape, float(i)) for i, shape in enumerate(shapes)]
-    intervals = torch.tensor([[float(i), float(i+1)] for i in range(len(frames))])
-    result = SPOTREncoder(Core())(EncoderInput(frames, intervals))
-    assert all(batch*channels*length <= 128*12800 for batch, channels, length in seen)
-    assert seen == [(1, 128, 12800), (1, 128, 12800), (2, 1, 201), (1, 2, 201)]
-    torch.testing.assert_close(result.values[:, 0], torch.arange(5, dtype=torch.float32))
+    samples = torch.full(shape, 2.)
+    intervals = torch.tensor([[0., 10.]])
+    result = SPOTREncoder(Core())(EncoderInput(samples, intervals))
+    assert seen == [(1, *shape)]
+    torch.testing.assert_close(result.values, torch.full((1, 512), 2.))
     torch.testing.assert_close(result.intervals_s, intervals)
 
 
@@ -225,8 +224,8 @@ def test_encoder_rejects_invalid_interval_before_running_frozen_weights():
     class Core(nn.Module):
         def forward(self, x):
             pytest.fail("Invalid intervals must fail before frozen encoding")
-    with pytest.raises(ValueError, match="intervals"):
-        SPOTREncoder(Core())(EncoderInput([torch.zeros(1, 2)], torch.tensor([[1., 0.]])))
+    with pytest.raises(ValueError, match="interval"):
+        SPOTREncoder(Core())(EncoderInput(torch.zeros(1, 2), torch.tensor([[1., 0.]])))
 
 
 @pytest.mark.parametrize("shape", [(0, 200), (129, 200), (1, 1), (1, 12801), (200,)])
@@ -237,7 +236,7 @@ def test_encoder_rejects_inputs_outside_pretrained_capacity(shape):
         def forward(self, x):
             pytest.fail("Invalid waveform shape must fail before frozen encoding")
     with pytest.raises(ValueError, match="SPOTR expects"):
-        SPOTREncoder(Core())(EncoderInput([torch.zeros(shape)], torch.tensor([[0., 1.]])))
+        SPOTREncoder(Core())(EncoderInput(torch.zeros(shape), torch.tensor([[0., 1.]])))
 
 
 @pytest.mark.parametrize("channels,length", [(1, 2), (2, 199), (3, 200), (2, 201), (1, 12800)])

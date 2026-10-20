@@ -7,8 +7,9 @@ from numbers import Real
 
 import numpy as np
 
-TYPES = ("ecg", "eeg", "accelerometer", "gyroscope", "ppg", "eda",
-         "respiration", "temperature", "emg")
+from .provenance import SPOTR_MAX_CHANNELS, SPOTR_MAX_SAMPLES
+
+TYPES = ("eeg", "ieeg", "ecg", "ppg")
 SIGNAL_CONDITIONS = ("raw", "processed")
 
 
@@ -45,12 +46,12 @@ def validate_text(question, criteria):
         raise ValueError("criteria entries must be distinct")
 
 
-def validate_state(state, max_channels=128, max_samples=1_000_000):
+def validate_state(state, max_channels=SPOTR_MAX_CHANNELS, max_samples=SPOTR_MAX_SAMPLES):
     if not isinstance(state, Mapping) or not isinstance(state.get("signals"), list):
         raise ValueError("state must contain a signals list")
     if not 1 <= len(state["signals"]) <= max_channels:
         raise ValueError(f"Supply 1–{max_channels} physical channels")
-    channels, explicit_starts = [], []
+    channels = []
     for entry in state["signals"]:
         if not isinstance(entry, Mapping) or not isinstance(entry.get("metadata"), Mapping):
             raise ValueError("Each signal needs samples and a metadata object")
@@ -88,7 +89,6 @@ def validate_state(state, max_channels=128, max_samples=1_000_000):
         if not math.isfinite(measured_duration) or not math.isclose(
                 duration, measured_duration, rel_tol=1e-12, abs_tol=1e-9):
             raise ValueError("metadata.duration_s disagrees with samples and sampling rate")
-        explicit_starts.append("start_time_s" in meta)
         if "timestamps_s" in meta:
             ts = np.asarray(meta["timestamps_s"], dtype=np.float64)
             if ts.shape != values.shape or not np.isfinite(ts).all():
@@ -97,19 +97,15 @@ def validate_state(state, max_channels=128, max_samples=1_000_000):
                 raise ValueError("Timestamps disagree with the declared uniform sampling rate")
             if not math.isclose(ts[0], start, rel_tol=0, abs_tol=max(1e-9, 0.01/rate)):
                 raise ValueError("Timestamps disagree with start_time_s")
-        for field in ("axis", "placement", "reference"):
+        for field in ("placement", "reference"):
             if field in meta and (not isinstance(meta[field], str) or not meta[field].strip()):
                 raise ValueError(f"metadata.{field} must be a nonempty string when supplied")
-        if meta.get("axis", "x").lower() not in ("x", "y", "z"):
-            raise ValueError("Inertial axis must be x, y, or z")
         meta.update(sensor_type=kind, sampling_rate_hz=rate, duration_s=duration, signal_condition=condition)
         channels.append(Channel(values, kind, rate, float(start), meta))
-    if len({c.rate for c in channels}) > 1 and not all(explicit_starts):
-        raise ValueError("Heterogeneous rates require start_time_s on every channel")
     first = channels[0]
     for c in channels[1:]:
-        sample_interval = min(1/first.rate, 1/c.rate)
-        if (abs(c.start-first.start) > max(1e-9, 0.01*sample_interval)
-                or abs(len(c.samples)/c.rate-len(first.samples)/first.rate) > max(1e-9, 0.5*sample_interval)):
-            raise ValueError("Channels must describe the same measured interval")
+        if c.rate != first.rate or len(c.samples) != len(first.samples):
+            raise ValueError("All channels must have the same sampling rate and sample count for one SPOTR input")
+        if abs(c.start-first.start) > max(1e-9, 0.01/first.rate):
+            raise ValueError("Channels must have the same start_time_s")
     return channels
