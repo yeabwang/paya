@@ -179,3 +179,61 @@ softmax over one unmasked key is exactly one. Masked values still contribute
 zero. Training/dropout and multi-token attention retain the existing path.
 161 unit tests passed, including explicit comparison against general attention.
 Latency improvement remains to be measured on an otherwise idle GPU.
+
+### Refinement nomination and latency
+
+| Compact variant | Accuracy | NLL | Brier | ECE | Task macro F1 | Task macro AUROC |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| CE + 0.05 smoothing | 68.40% | 0.78821 | 0.44595 | 0.06921 | 0.35013 | 0.70003 |
+| Weighted + 0.05 smoothing | 65.83% | 0.78893 | 0.44999 | 0.03488 | 0.35584 | 0.69633 |
+
+Nominate smoothing without class weighting. It improves every displayed
+selection metric relative to the reference, whereas weighting costs accuracy.
+The task-level report still includes failures: zero recall remains for some
+activity, BP, breathing, oxygen and HRV labels. AF no longer has zero recall.
+These aggregate gains do not mean every task or class improved.
+
+An idle-GPU, interleaved benchmark used 260 batch-one public API requests per
+case across the same 13 selection examples/task types. Native preparation and
+signal encoding are included; text embeddings are warm; no signal-feature
+cache is used; CUDA is synchronized. Process/model startup is excluded.
+
+| Case | p50 ms | p95 ms | p99 ms |
+| --- | ---: | ---: | ---: |
+| Reference, original attention path | 13.760 | 16.526 | 18.332 |
+| Reference, equivalent attention shortcut | 13.419 | 13.513 | 16.562 |
+| Compact smoothed head | 12.047 | 12.338 | 16.213 |
+
+Baseline probabilities were identical under the shortcut on the checked
+requests. The compact public checkpoint saved/reloaded and reproduced its
+prediction. Median public inference latency is about 12.5% lower than the
+same-session reference. This is a small idle-device measurement, not a service
+load or cold-start guarantee.
+
+### Full-data expansion
+
+The nominated compact head is an optional `kind: interaction` configuration;
+the default attention model and old checkpoints remain loadable. The public
+state/question/criteria arguments are unchanged. Only head weights train.
+Frozen SQLite features now bind encoders, preparation, signal representation
+and cache contract, excluding head settings which cannot affect those features.
+Existing stores are validated under that same rule; changed assets still fail.
+
+The next run is `paya-full-003`: all 1,637,289 native training rows, three complete
+epochs, batch 512, 3,198 steps/epoch, 9,594 total updates, AdamW lr 0.0003 and
+0.05 real-candidate label smoothing. No class weighting. Deterministic
+no-replacement sampling includes each QA row exactly once per epoch. Full
+selection NLL chooses the checkpoint at 1,599-step intervals; no test selection.
+
+Feature preparation journals checksummed, synced 10,000-row chunks and resumes
+only if dataset/model/builder bindings match. Training checkpoints preserve
+optimizer, random states, logical step, best weights and online run identity.
+GPU allocation is checked against an explicit reserved budget before loading
+the bank. NumPy-backed Arrow sample views avoid Python float expansion while
+preserving exact preparation identities; heterogeneous structures fall back
+to the existing conversion. No additional raw dataset copy is created.
+
+Verification: 166 unit tests passed, including Arrow-view identity/fallback,
+chunk corruption/recovery, public compact checkpoint reload and exact epoch
+coverage. Final full-run metrics, independent
+calibration and retrospective test comparison remain pending.

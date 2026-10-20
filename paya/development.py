@@ -17,31 +17,10 @@ import yaml
 from .atomic import atomic_output
 from .classification import classification_metrics
 from .evaluate import metrics
-from .head import DecisionHead
+from .head import DecisionHead, InteractionHead
 from .model import PayaModel
 from .provenance import fingerprint, sha256
 from .tracking import open_run
-
-
-class InteractionHead(nn.Module):
-    """Experimental shared candidate scorer with explicit signal/text products."""
-
-    def __init__(self, width=128, dropout=0.1):
-        super().__init__()
-        self.config = dict(kind="interaction", width=width, dropout=dropout)
-        self.signal = nn.Sequential(nn.LayerNorm(512), nn.Linear(512, width), nn.GELU())
-        self.text = nn.Sequential(nn.Linear(768, width), nn.LayerNorm(width))
-        self.context = nn.Sequential(nn.Linear(width * 3, width), nn.GELU(), nn.Dropout(dropout))
-        self.score = nn.Sequential(nn.Linear(width * 3, width), nn.GELU(),
-                                   nn.Dropout(dropout), nn.Linear(width, 1))
-
-    def forward(self, signal, signal_mask, question, criteria, criteria_mask):
-        if signal.shape[1:] != (1, 512) or not signal_mask.all():
-            raise ValueError("Interaction head requires one unpadded global signal token")
-        x, q, c = self.signal(signal[:, 0]), self.text(question), self.text(criteria)
-        context = self.context(torch.cat([x, q, x * q], -1))[:, None].expand_as(c)
-        z = self.score(torch.cat([context, c, context * c], -1)).squeeze(-1)
-        return z.masked_fill(~criteria_mask, -torch.inf)
 
 
 def class_weights(rows, power=0.5, maximum=4.0):
@@ -83,23 +62,35 @@ class Bank:
         indices = np.random.default_rng(seed).permutation(manifest['rows'])
         indices = indices[:limit] if limit else np.arange(manifest['rows'])
         self.indices = indices
-        wanted = set(map(int, indices))
-        metadata = {}
-        with (self.path / 'rows.jsonl').open() as source:
-            for index, line in enumerate(source):
-                if index in wanted:
-                    metadata[index] = json.loads(line)
-        self.rows = [metadata[int(index)] for index in indices]
+        if limit:
+            wanted = set(map(int, indices)); metadata = {}
+            with (self.path / 'rows.jsonl').open() as source:
+                for index, line in enumerate(source):
+                    if index in wanted: metadata[index] = json.loads(line)
+            self.rows = [metadata[int(index)] for index in indices]
+        else:
+            with (self.path / 'rows.jsonl').open() as source:
+                self.rows = [json.loads(line) for line in source]
+            if len(self.rows) != manifest['rows']:
+                raise ValueError("Bank row count differs")
         self.sha256 = fingerprint({'bank': manifest['binding'], 'indices': indices.tolist()})
         self.device = device
         def load(name):
             return np.load(self.path / (name + '.npy'), mmap_mode='r')
-        self.signal = torch.tensor(np.asarray(load('signals')[indices]), device=device)[:, None]
+        if str(device).startswith('cuda'):
+            estimated = len(indices) * (512 * 4 + 256)
+            free, _ = torch.cuda.mem_get_info()
+            if estimated > free * .7:
+                raise ValueError("Feature bank exceeds the reserved GPU memory budget; reduce the development sample")
+        def selected(name):
+            value=load(name)
+            return np.asarray(value[indices] if limit else value)
+        self.signal = torch.tensor(selected('signals'), device=device)[:, None]
         self.question = torch.tensor(np.asarray(load('questions')), device=device)
         self.criteria = torch.tensor(np.asarray(load('criteria')), device=device)
-        self.qi = torch.tensor(np.asarray(load('question_indices')[indices]), device=device).long()
-        self.ci = torch.tensor(np.asarray(load('criteria_indices')[indices]), device=device).long()
-        self.targets = torch.tensor(np.asarray(load('targets')[indices]), device=device).long()
+        self.qi = torch.tensor(selected('question_indices'), device=device).long()
+        self.ci = torch.tensor(selected('criteria_indices'), device=device).long()
+        self.targets = torch.tensor(selected('targets'), device=device).long()
 
     def batch(self, indices, ablation=None):
         signal = self.signal[indices]
@@ -108,6 +99,22 @@ class Bank:
         c = self.ci[indices]
         return signal, torch.ones(len(signal), 1, dtype=torch.bool, device=self.device), \
             self.question[self.qi[indices]], self.criteria[c.clamp_min(0)], c >= 0
+
+
+class EpochBatches:
+    """Deterministic no-replacement batches, recoverable from a logical step."""
+    def __init__(self, count, batch_size, seed, device='cpu'):
+        self.count,self.batch_size,self.seed,self.device=count,batch_size,seed,device
+        self.steps_per_epoch=(count+batch_size-1)//batch_size
+        self.epoch=None;self.order=None
+
+    def at(self, step):
+        epoch,offset=divmod(step,self.steps_per_epoch)
+        if epoch!=self.epoch:
+            generator=torch.Generator(device=self.device).manual_seed(self.seed+epoch)
+            self.order=torch.randperm(self.count,generator=generator,device=self.device)
+            self.epoch=epoch
+        return self.order[offset*self.batch_size:(offset+1)*self.batch_size]
 
 
 @torch.no_grad()
@@ -140,9 +147,12 @@ def main():
             for path in sorted(Path(__file__).parent.rglob('*.py'))}
     torch.set_num_threads(8)
     root = Path(plan['directory']); root.mkdir(parents=True, exist_ok=True)
-    train = Bank('cache/paya-development/train', plan.get('train_limit'))
-    selection = Bank('cache/paya-development/selection', plan.get('selection_limit'))
-    full_selection = Bank('cache/paya-development/selection') if plan.get('final_full_selection') else None
+    train = Bank(plan.get('bank_train','cache/paya-development/train'), plan.get('train_limit'))
+    selection_path=plan.get('bank_selection','cache/paya-development/selection')
+    selection = Bank(selection_path, plan.get('selection_limit'))
+    full_selection = Bank(selection_path) if plan.get('final_full_selection') else None
+    if plan.get('epochs'):
+        plan['steps']=((len(train.rows)+plan['batch_size']-1)//plan['batch_size'])*plan['epochs']
     config = yaml.safe_load(Path('config/paya-fast.yaml').read_text())
     model = PayaModel.from_assets(config['assets'], config['preparation'], config['head'], 'cuda')
     reference = root / 'reference.json'
@@ -167,6 +177,7 @@ def main():
         weights = torch.tensor(class_weights(train.rows) if experiment.get('weighted')
                                else np.ones(len(train.rows), dtype=np.float32), device='cuda')
         optimizer = torch.optim.AdamW(head.parameters(), lr=experiment.get('lr', 3e-4), weight_decay=.01)
+        sampler=EpochBatches(len(train.rows),plan.get('batch_size',256),seed,'cuda') if plan.get('epochs') else None
         binding = fingerprint({'plan': plan, 'experiment': experiment, 'code': code,
                                'train': train.sha256, 'selection': selection.sha256})
         resume = destination / 'last.pt'
@@ -181,7 +192,9 @@ def main():
             previous = saved['wandb']
         settings = deepcopy(config)
         settings['wandb'].update(name='paya-' + experiment['name'], log_models=False)
+        settings['head']=head.config
         settings['experiment'] = {**experiment, 'plan': plan, 'binding': binding, 'code_sha256': code}
+        model.head = head
         proxies = {name: SimpleNamespace(rows=bank.rows, sha256=bank.sha256)
                    for name, bank in [('train', train), ('selection', selection)]}
         started = perf_counter()
@@ -190,7 +203,7 @@ def main():
                 torch.set_rng_state(saved['rng']); torch.cuda.set_rng_state_all(saved['cuda_rng'])
             for step in range(begin + 1, plan['steps'] + 1):
                 head.train()
-                indices = torch.randint(len(train.rows), (plan.get('batch_size', 256),), device='cuda')
+                indices = sampler.at(step-1) if sampler else torch.randint(len(train.rows), (plan.get('batch_size', 256),), device='cuda')
                 batch = train.batch(indices)
                 z = head(*batch)
                 losses = smoothed_choice_loss(z, train.targets[indices], batch[-1], experiment.get('smoothing', 0))
@@ -222,6 +235,12 @@ def main():
                             'step': step, 'best': best, 'best_state': best_state, 'history': history,
                             'rng': torch.get_rng_state(), 'cuda_rng': torch.cuda.get_rng_state_all(),
                             'wandb': {'id': run.id, 'entity': run.entity, 'project': run.project, 'mode': 'online'}}, out)
+                    with atomic_output(root/'status.json','w') as out:
+                        json.dump({'phase':'training','experiment':experiment['name'],'step':step,
+                            'total_steps':plan['steps'],'epochs':plan.get('epochs'),
+                            'completed_epochs':step//sampler.steps_per_epoch if sampler else None,
+                            'latest_selection':history[-1] if history else None,'wandb_url':run.url,
+                            'peak_gpu_allocated_mib':torch.cuda.max_memory_allocated()/1024**2},out)
             head.load_state_dict(best_state)
             result = {'config': experiment, 'binding': binding, 'code_sha256': code, 'train_rows': len(train.rows),
                 'selection_rows': len(selection.rows), 'seconds': perf_counter() - started,

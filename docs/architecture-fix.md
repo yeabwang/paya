@@ -62,6 +62,16 @@ Question and choices are independently encoded. MPNet maps `[N,L_t]` token IDs t
 
 ## Trainable decision head
 
+The optional `head.kind: interaction` uses a 128-wide head (264,065 parameters)
+instead of attention. It normalizes/projects the global signal and independently
+projects question/candidate vectors, forms a signal-question product, then scores
+each candidate using context, candidate and their product. Candidate permutation
+equivariance and the public arguments/output are preserved. Encoder assets stay
+frozen. `head.kind` is included in checkpoint identity; old attention checkpoint
+identities are unchanged. See [experiment evidence](experiments.md) for the
+validation comparisons and remaining class failures. This optional configuration
+does not establish performance for other signal modalities without evaluation.
+
 The default head has width 256, two residual blocks, four attention heads of width 64 and 2,567,681 trainable parameters. Candidate states share one role vector and scorer; there are no candidate-position embeddings.
 
 | Layer | Input | Output |

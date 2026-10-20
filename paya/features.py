@@ -63,10 +63,18 @@ class SQLiteFeatureCache:
 
     @torch.no_grad()
     def get_many_or_encode(self, model, prepared):
-        binding = json.dumps({"contract":CACHE_CONTRACT,"model":model.identity()},sort_keys=True)
+        identity = dict(model.identity())
+        identity.pop('head', None)
+        current = {"contract":CACHE_CONTRACT,"model":identity}
+        binding = json.dumps(current,sort_keys=True)
         existing = self.db.execute('SELECT binding FROM metadata').fetchone()
-        if existing and existing[0] != binding:
-            raise ValueError("Frozen feature cache contract mismatch")
+        if existing:
+            previous = json.loads(existing[0])
+            # Old stores bound head settings even though frozen features do not depend on them.
+            if isinstance(previous.get('model'),dict):
+                previous['model'].pop('head',None)
+            if previous != current:
+                raise ValueError("Frozen feature cache contract mismatch")
         if not existing:
             with self.db: self.db.execute('INSERT INTO metadata VALUES (?)',(binding,))
         unique = {value.identity:value for value in prepared}

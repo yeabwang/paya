@@ -1,0 +1,11 @@
+{
+  "directory": "runs/paya-full-003",
+  "bank_train": "cache/paya-full-bank/train",
+  "bank_selection": "cache/paya-development/selection",
+  "epochs": 3,
+  "batch_size": 512,
+  "evaluate_every": 1599,
+  "experiments": [
+    {"name": "full-003-interaction-smooth", "head": "interaction", "smoothing": 0.05}
+  ]
+}

@@ -7,7 +7,7 @@ import torch
 from torch import nn
 
 from .encoders import SignalEncoder
-from .head import DecisionHead
+from .head import DecisionHead, InteractionHead
 from .inputs import validate_text
 from .preprocessing import SignalPreprocessor, PreparationConfig, PreparedState
 from .provenance import RUNTIME_CONTRACT, ARCHITECTURE, verify_assets
@@ -35,7 +35,11 @@ class PayaModel(nn.Module):
     def __init__(self, signal_encoder, text_encoder, preparation=None, head=None, asset_identity=None):
         super().__init__()
         self.encoder = signal_encoder.requires_grad_(False).eval()
-        self.head = DecisionHead(**(head or {}))
+        settings = dict(head or {})
+        kind = settings.pop("kind", "attention")
+        if kind not in ("attention", "interaction"):
+            raise ValueError("Unknown decision-head kind")
+        self.head = (InteractionHead if kind == "interaction" else DecisionHead)(**settings)
         self.text_encoder = text_encoder
         self.preprocessor = SignalPreprocessor(preparation)
         self.asset_identity = asset_identity or {"injected_test_encoders": True}
