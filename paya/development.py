@@ -142,6 +142,7 @@ def main():
     root = Path(plan['directory']); root.mkdir(parents=True, exist_ok=True)
     train = Bank('cache/paya-development/train', plan.get('train_limit'))
     selection = Bank('cache/paya-development/selection', plan.get('selection_limit'))
+    full_selection = Bank('cache/paya-development/selection') if plan.get('final_full_selection') else None
     config = yaml.safe_load(Path('config/paya-fast.yaml').read_text())
     model = PayaModel.from_assets(config['assets'], config['preparation'], config['head'], 'cuda')
     reference = root / 'reference.json'
@@ -150,6 +151,11 @@ def main():
         load_checkpoint('runs/paya-full-002/training/best.pt', model)
         with atomic_output(reference, 'w') as out:
             json.dump(evaluate(model.head, selection), out, indent=2, allow_nan=False)
+    if full_selection is not None and not (root / 'reference-full.json').exists():
+        from .checkpoint import load_checkpoint
+        load_checkpoint('runs/paya-full-002/training/best.pt', model)
+        with atomic_output(root / 'reference-full.json', 'w') as out:
+            json.dump(evaluate(model.head, full_selection), out, indent=2, allow_nan=False)
     for experiment in plan['experiments']:
         destination = root / experiment['name']; destination.mkdir(exist_ok=True)
         if (destination / 'result.json').exists():
@@ -223,6 +229,13 @@ def main():
                 'selected_by': 'lowest selection NLL among evaluated steps',
                 'selection': evaluate(head, selection), 'mean_signal_ablation': evaluate(head, selection, 'mean'),
                 'wandb': run.url}
+            if full_selection is not None:
+                result['full_selection'] = evaluate(head, full_selection)
+                result['full_selection_mean_signal_ablation'] = evaluate(head, full_selection, 'mean')
+                run.log({'step': plan['steps'],
+                    **{f'full_selection/{k}': v for k, v in result['full_selection']['pooled'].items() if k != 'reliability'},
+                    'full_selection/task_macro_f1': result['full_selection']['task_macro_f1'],
+                    'full_selection/task_macro_auroc': result['full_selection']['task_macro_auroc']})
             with atomic_output(destination / 'best.pt') as out:
                 torch.save({'binding': binding, 'config': experiment, 'head': best_state}, out)
             with atomic_output(destination / 'result.json', 'w') as out:

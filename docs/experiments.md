@@ -115,3 +115,34 @@ Smoothing is 0.05 over real candidates only, never padding.
 Verification before pilot: 158 local unit tests passed, followed by a new bank
 alignment/corruption check and the existing focused checks (9 passed). The
 experimental interaction head is not wired into the public model or promoted.
+
+### Pilot outcome and expansion decision
+
+Six 8,192-train/4,096-selection pilots completed; all use the same rows, seed,
+800 updates and the predeclared lowest-NLL checkpoint selector. Reference
+`paya-full-002` on these selection rows: accuracy 68.29%, NLL 0.97111, Brier
+0.47526, ECE 0.08406, mean task macro F1 0.26073, mean task macro AUROC 0.67613.
+
+| Pilot | Accuracy | NLL | Brier | ECE | Task macro F1 | Task macro AUROC |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Attention CE | 65.58% | 0.91071 | 0.50733 | 0.07926 | 0.21266 | 0.56617 |
+| Attention weighted | 62.62% | 0.90941 | 0.51949 | 0.06759 | 0.24487 | 0.63104 |
+| Attention smoothing | 65.60% | 0.89056 | 0.50305 | 0.05969 | 0.21418 | 0.55691 |
+| Attention weighted + smoothing | 62.94% | 0.89861 | 0.51677 | 0.06493 | 0.24166 | 0.62478 |
+| Interaction CE | 65.06% | 0.84230 | 0.47643 | 0.06087 | 0.27150 | 0.61407 |
+| Interaction weighted + smoothing | 61.08% | 0.88825 | 0.50963 | 0.02633 | 0.30490 | 0.60730 |
+
+These are tradeoffs, not an overall improvement claim. The CE attention head's
+lowest-NLL checkpoint has identical accuracy and F1 under mean-signal ablation;
+later checkpoints use signals more but score worse on NLL. This exposes a real
+selection-objective conflict under imbalance. Late weighted/smoothed attention
+reaches F1 0.32190 but NLL 0.94352. Do not report that F1 as the selected model's
+score or choose it from test results.
+
+Expand the unchanged attention control, weighted/smoothed attention, and CE
+interaction head using all 102,345 development training rows, batch 512 and
+1,600 updates. A fixed 16,384-row selection sample chooses checkpoints every
+400 steps; then evaluate those checkpoints once on all 196,707 selection rows
+and under a mean-signal ablation. The whole selection set remains development
+data, so these comparisons do not constitute an untouched test result. No pilot
+variant has been promoted to the public inference model.
