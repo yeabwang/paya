@@ -1,6 +1,6 @@
 # Paya
 
-**The first non-autoregressive decision engine for body signals.** Typed decisions from physiological signals, a question and candidate answers.
+**A non-autoregressive system 1 decision model for physiological signals.** 
 
 ## Use
 
