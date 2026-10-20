@@ -263,7 +263,8 @@ may fail across populations. This is an observability hypothesis, not a finding
 that the supplied labels are wrong or a reason to relabel them.
 
 [A 3,387-adult HRV study](https://pmc.ncbi.nlm.nih.gov/articles/PMC4586373/)
-compared ultra-short ECG estimates with 240-300-second references. Its findings
+compared ultra-short interval-based estimates with 240-300-second references
+(its methods derived intervals from finger arterial-pressure recordings). Its findings
 depend on the HRV statistic and recording protocol and do not validate these
 PPG QA categories. Later data research should distinguish short-window label
 prediction from recovery of a longer-duration physiological measurement. No
