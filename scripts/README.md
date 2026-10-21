@@ -18,6 +18,10 @@ Machine-specific shell helpers remain in ignored `.temp/`.
 | `finetune_integration` | Small fitting and public-API checkpoint reload diagnostic |
 | `finetune_review` | Evaluate final pilot weights and predefined interpolations |
 | `fetch_finetune_reports` | Retrieve small reports through the secure local helper |
+| `finetune_support` | Audit label support in the exact training/monitor samples |
+| `verify_finetune_tracking` | Read back online W&B histories for completed pilots |
+| `report_finetune` | Generate the review report from aggregate outputs |
+| `normwear_audit` | Inspect pinned public source/configuration without weights |
 
 For example: `python -m scripts.finetune --plan config/finetune-conflict.json`.
 Plans bind source hashes, inputs and parent checkpoints. Moving code changes the

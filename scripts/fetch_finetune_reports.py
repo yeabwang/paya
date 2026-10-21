@@ -12,6 +12,10 @@ def main():
     reports = {
         'pilot-summary.json': 'runs/paya-finetune-pilot-001/summary.json',
         'preservation-summary.json': 'runs/paya-finetune-preservation-001/summary.json',
+        'conflict-summary.json': 'runs/paya-finetune-conflict-001/summary.json',
+        'details.json': 'runs/paya-finetune-details.json',
+        'sample-support.json': 'runs/paya-finetune-sample-support.json',
+        'online.json': 'runs/paya-finetune-online.json',
         'review.json': 'runs/paya-finetune-review.json',
         'role-report.json': 'data/experiment-roles-v2/report.json',
         'integration.json': 'runs/paya-finetune-integration/result.json',

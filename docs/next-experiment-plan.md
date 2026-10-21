@@ -204,3 +204,14 @@ Reuse the verified frozen-feature stores, allocate bank indices rather than wave
 Every stage records code/config/input hashes, parent checkpoint hash, sampler probabilities, unique exposures, seeds, learning-rate/stopping histories, raw/calibrated metrics, elapsed time and online W&B links. Commit implementation changes separately from results, retain failed experiments, and give short reports between stages. All shell helpers stay under `.temp`. Raw datasets and model checkpoints remain on the GPU; retrieve only small reports. Create a new monitor only when an approved full run actually starts.
 
 The first proposed action after review is the data/coverage audit followed by the controlled checkpoint fine-tuning comparison. The proposal does not authorize replacing the current model based solely on aggregate accuracy or a literature result.
+
+## User update: stop after the small experiments
+
+The user now requires reporting all small-experiment outcomes and stopping before
+any expansion to larger development or full runs. This supersedes the automatic
+progression in steps 5-7 above. No new full run or monitoring timer is authorized
+until that review. The requested final full-training comparison replaces the
+frozen signal encoder with NormWear, with evaluation, calibration and latency
+reporting; see the [pinned source audit and comparison design](normwear-encoder-comparison.md).
+Experiment runners, audits and postprocessing tools now belong in `scripts/`;
+reusable model code stays in `paya/`, and local shell helpers stay in `.temp/`.

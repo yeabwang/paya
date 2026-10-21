@@ -30,6 +30,15 @@ def main():
         (target / name).write_bytes(data)
         report['files'][name] = {'url': url, 'bytes': len(data),
                                 'sha256': hashlib.sha256(data).hexdigest()}
+    upstream = 'Mobile-Sensing-and-UbiComp-Laboratory/NormWear'
+    github = json.loads(read('https://api.github.com/repos/' + upstream + '/commits/main'))
+    report['github_revision'] = github['sha']
+    for name in ['main_model.py', 'LICENSE']:
+        url = f'https://raw.githubusercontent.com/{upstream}/{github["sha"]}/{name}'
+        data = read(url)
+        (target / ('github-' + name)).write_bytes(data)
+        report['files']['github-' + name] = {'url': url, 'bytes': len(data),
+                                            'sha256': hashlib.sha256(data).hexdigest()}
     output = root / '.temp/reports/next/normwear-source.json'
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(report, indent=2), encoding='utf-8')
