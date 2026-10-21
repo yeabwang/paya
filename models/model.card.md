@@ -7,10 +7,11 @@ tags:
   - classification
   - non-autoregressive
 ---
-
 # Paya
 
 Paya is a **non-autoregressive System 1 decision model for physiological signals**. Given a signal recording, a question and candidate answers, it returns one choice and a probability for each candidate in a single forward pass.
+
+![System results](../docs/figures/system.png)
 
 ## Model
 
@@ -22,18 +23,17 @@ The full run used 1,637,289 processed PPG QA rows, three epochs, batch 512 and A
 
 ## Results
 
-| Metric | Value |
-| --- | ---: |
-| Accuracy | 76.86% |
-| Mean task macro AUROC | 0.67465 |
-| ECE, 15 bins | 0.02115 |
-| Mean task macro F1 | 0.37885 |
-| NLL / Brier | 0.65148 / 0.34587 |
-| Median / p95 latency | 12.30 / 15.81 ms |
+
+| Metric                |             Value |
+| ----------------------- | ------------------: |
+| Accuracy              |            76.86% |
+| Mean task macro AUROC |           0.67465 |
+| ECE, 15 bins          |           0.02115 |
+| Mean task macro F1    |           0.37885 |
+| NLL / Brier           | 0.65148 / 0.34587 |
+| Median / p95 latency  |  12.30 / 15.81 ms |
 
 ![Per-task results](../docs/figures/per-task.png)
-
-![System results](../docs/figures/system.png)
 
 Scores use the same 323,944-row retrospective historical test. AUROC averages supported one-versus-rest classes within tasks, then tasks equally. Latency uses this exact checkpoint: 1,300 synchronized batch-one public-API requests on an RTX 2080 Ti, warm text and uncached signal encoding. Process/network overhead and concurrency are excluded.
 
