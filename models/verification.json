@@ -4,6 +4,7 @@
   "public_inputs_checked": 13,
   "maximum_probability_difference_after_cleanup": 0.0,
   "export_reload_matches": true,
-  "files": 58,
-  "bytes": 690214285
+  "local_unit_tests_passed": 155,
+  "gpu_tests_passed": 156,
+  "uploaded_files_verified": 58
 }

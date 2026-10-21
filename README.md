@@ -2,7 +2,11 @@
 
 A non-autoregressive System 1 decision model for physiological signals.
 
+![Headline results](docs/figures/system.png)
+
 The selected model combines frozen signal/text encoders with a trained MLP fusion head. It scores supplied candidates directly and returns the selected choice, confidence and candidate probabilities.
+
+C:\jev\paya\docs\figures\per-task.png
 
 ## Use
 

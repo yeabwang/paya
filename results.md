@@ -33,7 +33,7 @@ All plots and scores describe the same raw checkpoint: **full-003, step 4,797, t
 | Respiratory rate | 9,556 | 40.18% | 0.5458 |
 | Activity | 5,320 | 37.37% | 0.7423 |
 
-Accuracy and ECE pool QA rows. AUROC is one-versus-rest, averaged over supported classes within tasks and then equally across tasks; undefined class AUROCs are omitted. ECE uses 15 equal-width confidence bins. Figures express bounded metrics as percentages; tabular AUROC and ECE use the 0–1 scale. Macro F1 includes the task candidate vocabulary, assigning zero to absent classes. QA rows can share subjects and waveforms; no subject-bootstrap confidence intervals are claimed.
+Accuracy and ECE pool QA rows. AUROC is one-versus-rest, averaged over supported classes within tasks and then equally across tasks; undefined class AUROCs are omitted. ECE uses 15 equal-width confidence bins. The task figure uses percentages; headline and tabular AUROC/ECE use the 0â€“1 scale. Macro F1 includes the task candidate vocabulary, assigning zero to absent classes. QA rows can share subjects and waveforms; no subject-bootstrap confidence intervals are claimed.
 
 Latency was measured on the exact raw checkpoint over 1,300 public-API requests on an idle RTX 2080 Ti, batch one, using 13 native processed 10-second PPG inputs at 125 Hz. CUDA timing was synchronized. Text embeddings were warm; signal-feature caching was disabled. Preparation, signal encoding and decision scoring are included. Process startup, network/service overhead and concurrent load are excluded. Earlier calibrated-model timings are not substituted for these release timings.
 
