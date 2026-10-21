@@ -4,7 +4,6 @@
 /model/
 /runs/
 /wandb/
-/artifacts/
 /.pytest_cache/
 /.mypy_cache/
 /.test-tmp/
@@ -22,6 +21,7 @@ checkpoints/
 /third-party/**/pytorch_model*.bin
 *.tar.gz
 *.tgz
-/retired/
 /models/export/
 /models/.cache/
+AGENTS.md
+/artifacts/

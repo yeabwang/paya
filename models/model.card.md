@@ -30,7 +30,7 @@ Candidate logits are masked and converted to probabilities with softmax at tempe
 
 The full run used 1,637,289 processed, normalized PPG QA rows, each containing a 10-second signal at 125 Hz. The three-epoch run used batch 512, AdamW with learning rate 0.0003, weight decay 0.01, label smoothing 0.05 and gradient clipping at norm 1. No class weighting was used. Both encoders remained frozen. Questions and targets preserve the supplied QA content.
 
-The selected checkpoint is update 4,797 of 9,594, chosen by NLL on 196,707 selection rows at 1,599-update intervals. Separate calibration and test roles contain 21,342 and 323,944 rows. Native train/test membership was retained; the supplied validation corpus was divided into selection and calibration roles before training. Known connected subject, recording and waveform identities remain disjoint. The release uses the original raw checkpoint at temperature 1; later continuation pilots did not qualify for replacement. See the [experiment protocol](../doc/experiments.md) and [fine-tuning outcomes](../doc/finetune.md).
+The selected checkpoint is update 4,797 of 9,594, chosen by NLL on 196,707 selection rows at 1,599-update intervals. Separate calibration and test roles contain 21,342 and 323,944 rows. Native train/test membership was retained; the supplied validation corpus was divided into selection and calibration roles before training. Known connected subject, recording and waveform identities remain disjoint. The release uses the original raw checkpoint at temperature 1; later continuation pilots did not qualify for replacement. See the [experiment protocol](../doc/experiments.md) and [continuation experiment outcomes](../doc/experiments.md#checkpoint-continuation-experiments).
 
 ## Results
 
