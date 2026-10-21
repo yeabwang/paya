@@ -1,0 +1,15 @@
+{
+  "directory": "runs/paya-finetune-pilot-001",
+  "parent": "runs/paya-full-003/training/best.pt",
+  "base_config": "config/paya-compact-full.yaml",
+  "train_limit": 64000,
+  "selection_limit": 16384,
+  "batch_size": 512,
+  "steps": 400,
+  "evaluate_every": 100,
+  "experiments": [
+    {"name": "all-task", "lr": 0.00003},
+    {"name": "weak-only", "lr": 0.00003, "replay": 0.0},
+    {"name": "replay", "lr": 0.00003, "replay": 0.25}
+  ]
+}
