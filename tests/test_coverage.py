@@ -2,7 +2,7 @@ import sqlite3
 
 import pytest
 
-from paya.coverage import summarize
+from scripts.coverage import summarize
 
 
 def fixture_db():

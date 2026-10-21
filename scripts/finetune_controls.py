@@ -52,6 +52,17 @@ def anchor_loss(head, initial):
     return numerator/denominator
 
 
+def project_conflicting_gradients(gradients, seed=42):
+    """PCGrad with deterministic task order and no projection of zero gradients."""
+    projected=gradients.clone();rng=np.random.default_rng(seed)
+    for i in range(len(gradients)):
+        for j in rng.permutation(len(gradients)):
+            if i==j:continue
+            coefficient=torch.minimum(projected[i].dot(gradients[j]),gradients.new_zeros(()))
+            projected[i]-=coefficient/gradients[j].square().sum().clamp_min(1e-20)*gradients[j]
+    return projected.sum(0)
+
+
 def retention_failures(candidate, reference, recovery=RECOVERY_TASKS):
     failures = []
     for task, baseline in reference['per_task'].items():

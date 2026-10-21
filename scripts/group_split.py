@@ -8,8 +8,8 @@ import sqlite3
 
 import numpy as np
 
-from .atomic import atomic_output
-from .provenance import fingerprint
+from paya.atomic import atomic_output
+from paya.provenance import fingerprint
 
 ROLES = ('train','selection','calibration','confirmation')
 
@@ -93,7 +93,7 @@ def build_roles(audit_path='runs/paya-next-audit/metadata.sqlite3', output='data
         report['roles'][role]=dict(rows=sum(v['rows'] for c in classes.values() for v in c.values()),
             groups=int((assignment==ROLES.index(role)).sum()),class_coverage=classes,
             manifest=str(root/(role+'.json')))
-    from .data import ChoiceDataset,assert_disjoint
+    from paya.data import ChoiceDataset,assert_disjoint
     datasets={r:ChoiceDataset(root/(r+'.json')) for r in ROLES}
     assert_disjoint(*datasets.values())
     for role,data in datasets.items():

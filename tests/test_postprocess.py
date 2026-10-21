@@ -4,7 +4,7 @@ import sqlite3
 import pytest
 
 from paya.evaluate import metrics
-from paya.postprocess import reference_comparison
+from scripts.postprocess import reference_comparison
 
 
 def test_historical_comparison_checks_identity_and_scores_both_models(tmp_path,monkeypatch):

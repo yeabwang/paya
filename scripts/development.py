@@ -15,15 +15,15 @@ from torch import nn
 from torch.nn import functional as F
 import yaml
 
-from .atomic import atomic_output
-from .classification import classification_metrics
-from .evaluate import metrics
-from .data import ChoiceDataset, assert_disjoint
-from .head import DecisionHead, InteractionHead
-from .model import PayaModel
-from .provenance import fingerprint, sha256
-from .tracking import open_run
-from .train import choice_loss
+from paya.atomic import atomic_output
+from paya.classification import classification_metrics
+from paya.evaluate import metrics
+from paya.data import ChoiceDataset, assert_disjoint
+from paya.head import DecisionHead, InteractionHead
+from paya.model import PayaModel
+from paya.provenance import fingerprint, sha256
+from paya.tracking import open_run
+from paya.train import choice_loss
 
 
 def class_weights(rows, power=0.5, maximum=4.0):
@@ -173,12 +173,12 @@ def main():
     for role,bank in [('train',train),('selection',selection)]:verify_bank_identity(bank,model,sources[role])
     reference = root / 'reference.json'
     if not reference.exists():
-        from .checkpoint import load_checkpoint
+        from paya.checkpoint import load_checkpoint
         load_checkpoint('runs/paya-full-002/training/best.pt', model)
         with atomic_output(reference, 'w') as out:
             json.dump(evaluate(model.head, selection), out, indent=2, allow_nan=False)
     if full_selection is not None and not (root / 'reference-full.json').exists():
-        from .checkpoint import load_checkpoint
+        from paya.checkpoint import load_checkpoint
         load_checkpoint('runs/paya-full-002/training/best.pt', model)
         with atomic_output(root / 'reference-full.json', 'w') as out:
             json.dump(evaluate(model.head, full_selection), out, indent=2, allow_nan=False)

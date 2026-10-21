@@ -12,17 +12,17 @@ import numpy as np
 import torch
 import yaml
 
-from .atomic import atomic_output
-from .checkpoint import load_checkpoint, save_checkpoint
-from .data import ChoiceDataset, assert_disjoint
+from paya.atomic import atomic_output
+from paya.checkpoint import load_checkpoint, save_checkpoint
+from paya.data import ChoiceDataset, assert_disjoint
 from .development import Bank, verify_bank_identity
 from .finetune_controls import (ReplaySampler, PlateauControl, RECOVERY_TASKS,
                                 anchor_loss, distillation_loss, retention_failures, recovery_f1)
-from .model import PayaModel
-from .provenance import fingerprint, sha256
+from paya.model import PayaModel
+from paya.provenance import fingerprint, sha256
 from .selection_metrics import score_logits
-from .tracking import open_run, run_identity
-from .train import choice_loss
+from paya.tracking import open_run, run_identity
+from paya.train import choice_loss
 
 
 def write(path, value):
@@ -33,13 +33,14 @@ class BankView:
     def __init__(self, bank, count=None, positions=None):
         self.bank = bank
         self.positions = np.asarray(positions if positions is not None else np.arange(count or len(bank.rows)))
+        self.position_tensor = torch.as_tensor(self.positions,device=bank.device)
         self.rows = [bank.rows[int(i)] for i in self.positions]
         self.manifest, self.device = bank.manifest, bank.device
-        self.targets = bank.targets[torch.as_tensor(self.positions,device=bank.device)]
+        self.targets = bank.targets[self.position_tensor]
         self.sha256 = fingerprint({'source':bank.sha256,'positions':self.positions.tolist()})
 
     def batch(self, indices):
-        positions = torch.as_tensor(self.positions,device=self.device)[indices]
+        positions = self.position_tensor[indices]
         return self.bank.batch(positions)
 
 
@@ -71,7 +72,26 @@ def update_step(head, teacher, bank, indices, optimizer, initial, experiment):
             penalty = penalty+experiment['distill']*distillation_loss(z[protected],old[protected],batch[-1][protected])
     loss = data_loss+penalty
     if not torch.isfinite(loss): raise FloatingPointError('Nonfinite fine-tuning loss')
-    optimizer.zero_grad(set_to_none=True); loss.backward()
+    optimizer.zero_grad(set_to_none=True)
+    if experiment.get('pcgrad'):
+        if experiment.get('anchor') or experiment.get('distill'):
+            raise ValueError('Compare PCGrad separately from preservation penalties')
+        tasks = [bank.rows[int(i)]['task'] for i in indices.cpu()]
+        parameters = tuple(head.parameters());gradients=[]
+        for task in sorted(set(tasks)):
+            selected = torch.tensor([t==task for t in tasks],dtype=torch.bool,device=bank.device)
+            task_loss = choice_loss(z[selected],bank.targets[indices][selected],batch[-1][selected],
+                                    experiment.get('smoothing',.05))*selected.sum()/len(selected)
+            gradient = torch.autograd.grad(task_loss,parameters,retain_graph=True)
+            gradients.append(torch.cat([v.flatten() for v in gradient]))
+        from .finetune_controls import project_conflicting_gradients
+        combined=project_conflicting_gradients(torch.stack(gradients),int(indices.sum()))
+        offset=0
+        for parameter in parameters:
+            parameter.grad=combined[offset:offset+parameter.numel()].view_as(parameter).clone()
+            offset+=parameter.numel()
+    else:
+        loss.backward()
     norm = torch.nn.utils.clip_grad_norm_(head.parameters(),1.)
     if not torch.isfinite(norm): raise FloatingPointError('Nonfinite fine-tuning gradients')
     optimizer.step()
@@ -225,8 +245,12 @@ def main():
     for bank,role in [(train,'train'),(full_selection,'selection')]:verify_bank_identity(bank,model,datasets[role])
     order=np.random.default_rng(20261021).permutation(len(full_selection.rows))[:plan.get('selection_limit',16384)]
     selection=BankView(full_selection,positions=order)
-    code={name:sha256(Path(__file__).parent/name) for name in ['finetune.py','finetune_controls.py',
-        'selection_metrics.py','head.py','model.py','checkpoint.py','tracking.py','development.py','train.py','data.py']}
+    repository=Path(__file__).resolve().parents[1]
+    code={str(path.relative_to(repository)):sha256(path) for path in [
+        *[repository/'scripts'/name for name in ['finetune.py','finetune_controls.py',
+                                              'selection_metrics.py','development.py']],
+        *[repository/'paya'/name for name in ['head.py','model.py','checkpoint.py',
+                                            'tracking.py','train.py','data.py']]]}
     if not (root/'gradient-probe.json').exists():write(root/'gradient-probe.json',gradient_probe(model.head,train))
     results=[]
     for experiment in plan['experiments']:

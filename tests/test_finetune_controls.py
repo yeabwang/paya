@@ -4,10 +4,18 @@ import numpy as np
 import pytest
 import torch
 
-from paya.finetune_controls import ReplaySampler, PlateauControl, anchor_loss, distillation_loss
-from paya.selection_metrics import score_logits
+from scripts.finetune_controls import ReplaySampler, PlateauControl, anchor_loss, distillation_loss
+from scripts.selection_metrics import score_logits
 from paya.evaluate import metrics
 from paya.classification import classification_metrics
+
+
+def test_pcgrad_preserves_aligned_gradients_and_projects_conflicts():
+    from scripts.finetune_controls import project_conflicting_gradients
+    aligned=torch.tensor([[1.,0.],[1.,1.]])
+    torch.testing.assert_close(project_conflicting_gradients(aligned),aligned.sum(0))
+    conflicting=torch.tensor([[1.,0.],[-1.,1.]])
+    torch.testing.assert_close(project_conflicting_gradients(conflicting),torch.tensor([.5,1.5]))
 
 
 def test_vector_metrics_match_public_metrics_with_permuted_candidates_and_ties():
@@ -63,9 +71,10 @@ def test_plateau_state_resumes_learning_rate_and_stopping_decisions():
     assert first.bad==5
 
 
-def test_finetuning_checkpoint_resume_reproduces_dropout_optimizer_and_replay(tmp_path):
+@pytest.mark.parametrize('experiment', [{'anchor':.01,'distill':.1}, {'pcgrad':True}])
+def test_finetuning_checkpoint_resume_reproduces_dropout_optimizer_and_replay(tmp_path, experiment):
     from types import SimpleNamespace
-    from paya.finetune import update_step
+    from scripts.finetune import update_step
     from paya.head import InteractionHead
 
     torch.manual_seed(9)
@@ -87,7 +96,7 @@ def test_finetuning_checkpoint_resume_reproduces_dropout_optimizer_and_replay(tm
             control.load_state_dict(saved['control']);begin=saved['step'];torch.set_rng_state(saved['rng'])
         sampler=ReplaySampler(rows,8,42,replay=.25)
         for step in range(begin+1,end+1):
-            values=update_step(head,teacher,bank,sampler.at(step-1),optimizer,initial,{'anchor':.01,'distill':.1})
+            values=update_step(head,teacher,bank,sampler.at(step-1),optimizer,initial,experiment)
             if step%3==0:control.update(values['loss'],optimizer)
         state=dict(head=head.state_dict(),optimizer=optimizer.state_dict(),control=control.state_dict(),
                    rng=torch.get_rng_state(),step=end)

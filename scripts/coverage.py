@@ -10,9 +10,9 @@ import sqlite3
 import pyarrow.parquet as pq
 import yaml
 
-from .atomic import atomic_output
-from .data import ChoiceDataset, assert_disjoint
-from .provenance import fingerprint, sha256
+from paya.atomic import atomic_output
+from paya.data import ChoiceDataset, assert_disjoint
+from paya.provenance import fingerprint, sha256
 
 
 class Components:

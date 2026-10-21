@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import torch
 
-from paya.development import InteractionHead, class_weights, smoothed_choice_loss
+from scripts.development import InteractionHead, class_weights, smoothed_choice_loss
 
 
 def test_smoothing_never_uses_padded_candidates():
@@ -39,7 +39,7 @@ def test_interaction_head_candidate_permutation_padding_and_signal_gradient():
 
 def test_bank_indices_align_rows_and_features_and_detect_corruption(tmp_path):
     import json
-    from paya.development import Bank
+    from scripts.development import Bank
     from paya.provenance import sha256
     arrays = {'signals':np.arange(4*512,dtype=np.float32).reshape(4,512),
         'questions':np.ones((2,768),dtype=np.float32), 'criteria':np.ones((3,768),dtype=np.float32),
@@ -94,7 +94,7 @@ def test_sqlite_features_reuse_across_heads_but_reject_changed_assets(model,tmp_
 
 
 def test_partial_bank_commits_recover_and_reject_corrupted_chunks(tmp_path):
-    from paya.development_bank import resume_signals,commit_signals
+    from scripts.development_bank import resume_signals,commit_signals
     values,state=resume_signals(tmp_path,5,'binding')
     values[:3]=7
     commit_signals(tmp_path,values,state,3,2)
@@ -108,7 +108,7 @@ def test_partial_bank_commits_recover_and_reject_corrupted_chunks(tmp_path):
 
 
 def test_epoch_batches_cover_every_row_and_resume_without_changing_global_rng():
-    from paya.development import EpochBatches
+    from scripts.development import EpochBatches
     initial=torch.get_rng_state().clone()
     sampler=EpochBatches(103,16,42)
     first=[sampler.at(i).clone() for i in range(7)]
@@ -122,7 +122,7 @@ def test_epoch_batches_cover_every_row_and_resume_without_changing_global_rng():
 
 def test_arrow_views_preserve_exact_preparation_identity_and_heterogeneous_fallback():
     from conftest import state
-    from paya.development_bank import waveform_rows
+    from scripts.development_bank import waveform_rows
     from paya.preprocessing import SignalPreprocessor
     import pyarrow as pa
     rows=[{'mapping_id':str(i),'state':state(rate=125,duration=10,condition='processed')} for i in range(3)]
@@ -140,7 +140,7 @@ def test_arrow_views_preserve_exact_preparation_identity_and_heterogeneous_fallb
 def test_experiment_bindings_include_effective_config_and_verify_frozen_source():
     from copy import deepcopy
     from types import SimpleNamespace
-    from paya.development import experiment_binding,verify_bank_identity
+    from scripts.development import experiment_binding,verify_bank_identity
     data=SimpleNamespace(sha256='data')
     config={'optim':{'lr':.001},'wandb':{'name':'one'}}
     original=experiment_binding({}, {}, {},data,data,config)

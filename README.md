@@ -38,7 +38,7 @@ Each channel requires `sensor_type`, `sampling_rate_hz` and `duration_s`. Rates 
 
 `signal + metadata → validate → clean raw channels only → stack channels → frozen SPOTR once → shared decision head`
 
-Frozen BioLORD-2023 encodes the question and each choice separately for the head. Only the decision head is trainable. It uses text self-attention, signal cross-attention, feed-forward layers and a shared candidate scorer.
+Frozen BioLORD-2023 encodes the question and each choice separately for the head. Only the decision head is trainable. The original attention head uses text self-attention, signal cross-attention, feed-forward layers and a shared candidate scorer. The current experimental configuration uses an MLP fusion head with element-wise (Hadamard) product features; both use the same frozen encoders and public inputs.
 
 The entire recording enters the signal encoder once as `[1,C,L]`, in supplied channel order, and returns one global `[1,512]` embedding. Ten seconds of PPG at 125 Hz enters as `[1,1,1250]`; six seconds at 65 Hz enters as `[1,1,390]`. There is no grouping, splitting or overlap. The head receives the signal embedding and separate question/choice embeddings, without metadata or elapsed-time features.
 
@@ -60,3 +60,5 @@ python -m pytest -q -m integration --basetemp cache/pytest-integration
 The signal and text encoders need local assets and `source.json` checksum records at the paths in [config/paya.yaml](config/paya.yaml). The asset command verifies the pinned upstream checkpoint before converting it to safetensors. The integration test exercises real frozen weights and writes `artifacts/architecture-shapes.json`.
 
 Paya versions are defined in [paya/provenance.py](paya/provenance.py): `v1`, Python package `1.0.0`. Accuracy, calibration, generalization and latency require trained weights and independent evaluation.
+
+Experiment runners, audits, analysis and postprocessing live in [scripts/](scripts/README.md). Reusable model and input code lives in `paya/`; local shell helpers stay in ignored `.temp/`.

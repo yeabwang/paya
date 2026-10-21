@@ -6,7 +6,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from paya.data import ChoiceDataset,assert_disjoint
-from paya.group_split import allocate_groups
+from scripts.group_split import allocate_groups
 from paya.provenance import sha256
 from conftest import state
 
