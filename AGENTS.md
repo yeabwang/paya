@@ -1,5 +1,6 @@
-# User preferences
+# Project conventions
 
-- Use established machine-learning terminology in explanations, reports, and new names. Describe custom combinations by their standard components; do not present implementation labels as recognized or novel ML architectures. Refer to the current decision head as an MLP fusion head with element-wise (Hadamard) product features. Existing code/config identifiers may remain for compatibility.
-- Put experiment runners, audit, analysis and postprocessing tools in `scripts/`; keep reusable model and public input code in `paya/`. Keep machine-specific `.sh` helpers in ignored `.temp/`.
-- The eight continuation pilots are complete; report their outcomes before starting NormWear work. The user subsequently authorized publishing the unchanged current model privately on Hugging Face and a separate branch named exactly `normwear`, with encoder-appropriate preparation, raw multimodal datasets, full training/evaluation and an apples-to-apples comparison. Preserve the current main model/run; only the user may decide on replacement. No failed continuation pilot is authorized for expansion.
+- Use established machine-learning terminology. The selected head is an MLP fusion head with Hadamard product features.
+- Keep supported model, input, training and inference code in `paya/`, with tests in `tests/`.
+- Keep historical code and experiment tools in ignored `retired/`; local shell helpers stay in ignored `.temp/`.
+- Preserve the selected checkpoint identity and predictions. Report metrics only for their matching checkpoint variant.

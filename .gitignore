@@ -22,3 +22,6 @@ checkpoints/
 /third-party/**/pytorch_model*.bin
 *.tar.gz
 *.tgz
+/retired/
+/models/export/
+/models/.cache/

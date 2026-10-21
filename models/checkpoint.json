@@ -1,0 +1,9 @@
+{
+  "run": "paya-full-003",
+  "checkpoint_sha256": "461b939b19ef59bfa05725c69438b2e8332e031b2586aeab9234fe848c633eba",
+  "learned_sha256": "e869cfe0db5df2e14d7ec815d8dc504bd3bfa1680500432820650b754c5dd746",
+  "selected_step": 4797,
+  "temperature": 1.0,
+  "calibrated": false,
+  "training_code_revision": "48754f3b86cb0c29e04673acfefd6f2f6418f55e"
+}

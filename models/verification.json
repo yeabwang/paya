@@ -1,0 +1,9 @@
+{
+  "checkpoint_sha256": "461b939b19ef59bfa05725c69438b2e8332e031b2586aeab9234fe848c633eba",
+  "learned_sha256": "e869cfe0db5df2e14d7ec815d8dc504bd3bfa1680500432820650b754c5dd746",
+  "public_inputs_checked": 13,
+  "maximum_probability_difference_after_cleanup": 0.0,
+  "export_reload_matches": true,
+  "files": 58,
+  "bytes": 690214285
+}

@@ -95,10 +95,10 @@ def test_dictionary_encoded_signals_do_not_bypass_numeric_memory_budget(tmp_path
 @pytest.mark.parametrize('cache_format',['files','sqlite'])
 def test_mid_epoch_resume_matches_uninterrupted_weights_with_dropout(tmp_path,monkeypatch,cache_format):
     import paya.train as module
-    from paya.head import DecisionHead
+    from paya.head import MLPFusionHead
     def factory(*args,**kwargs):
         model=new_model()
-        model.head=DecisionHead(width=256,layers=2,heads=4,dropout=0.2)
+        model.head=MLPFusionHead(width=128,dropout=0.2)
         return model
     monkeypatch.setattr(module.PayaModel,'from_assets',factory)
     paths={}

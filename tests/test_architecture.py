@@ -5,29 +5,20 @@ import pytest
 import torch
 
 from paya.encoders import SignalEncoder
-from paya.head import DecisionHead
+from paya.head import MLPFusionHead
 from paya.train import choice_loss
 from conftest import state
 
 
 def test_layer_shapes_and_separate_text_encoding(model):
-    seen, handles = {}, []
-    for name, module in (("text_input", model.head.text_input[0]),
-                         ("value", model.head.blocks[0].cross_attention.value),
-                         ("ff", model.head.blocks[0].feed_forward[0]), ("scorer", model.head.scorer)):
-        handles.append(module.register_forward_hook(lambda m, x, y, name=name:
-                       seen.setdefault(name, []).append((tuple(x[0].shape), tuple(y.shape)))))
-    batch = model.make_batch([state()], ["Which category?"], [["slow", "normal", "fast"]])
-    result = model(batch)
-    for handle in handles:
-        handle.remove()
-    assert model.text_encoder.calls[-1] == ["Which category?", "slow", "normal", "fast"]
-    assert model.head.roles.shape == (2, 256) and "ending" not in vars(batch)
-    assert set(result) == {"logits", "criteria_mask"} and result["logits"].shape == (1, 3)
-    assert seen["text_input"][0] == ((1, 4, 768), (1, 4, 256))
-    assert seen["value"][0] == ((1, 1, 512), (1, 1, 256))
-    assert seen["ff"][0] == ((1, 4, 256), (1, 4, 1024))
-    assert seen["scorer"][0] == ((1, 3, 256), (1, 3, 1))
+    batch=model.make_batch([state()],["Which category?"],[["slow","normal","fast"]])
+    result=model(batch)
+    assert model.text_encoder.calls[-1]==["Which category?","slow","normal","fast"]
+    assert batch.question.shape==(1,768) and batch.criteria.shape==(1,3,768)
+    assert result['logits'].shape==(1,3)
+    assert model.head.signal[1].in_features==512
+    assert model.head.text[0].in_features==768
+    assert model.head.config['width']==128
 
 
 def test_public_output_and_one_frozen_signal_encoder(model):
@@ -125,7 +116,7 @@ def test_heterogeneous_batch_masks_gradients_and_frozen_boundaries(model):
 
 def test_empty_signal_attention_mask_is_rejected(model):
     batch = model.make_batch([state()], ["q"], [["a", "b"]])
-    with pytest.raises(ValueError, match="real signal"):
+    with pytest.raises(ValueError, match="real signal vector"):
         model.head(torch.zeros(1, 2, 512), torch.zeros(1, 2, dtype=torch.bool),
                    batch.question, batch.criteria, batch.criteria_mask)
 
@@ -148,24 +139,18 @@ def test_encoder_wrapper_keeps_complete_native_recording():
     torch.testing.assert_close(encoded[0], frames.samples.mean().expand(512))
 
 
-def test_head_ignores_padding_and_preserves_signal_permutation_invariance():
-    head = DecisionHead(dropout=0).eval()
-    generator = torch.Generator().manual_seed(7)
-    signal = torch.randn(1, 3, 512, generator=generator)
-    question = torch.randn(1, 768, generator=generator)
-    criteria = torch.randn(1, 2, 768, generator=generator)
-    mask = torch.ones(1, 3, dtype=torch.bool)
-    choices = torch.ones(1, 2, dtype=torch.bool)
-    expected = head(signal, mask, question, criteria, choices)
-    order = [2, 0, 1]
-    actual = head(signal[:, order], mask, question, criteria, choices)
-    torch.testing.assert_close(actual, expected)
-    padded = head(torch.cat((signal, torch.full((1, 1, 512), 100.0)), 1),
-                  torch.tensor([[True, True, True, False]]),
-                  question, torch.cat((criteria, torch.full((1, 1, 768), 100.0)), 1),
-                  torch.tensor([[True, True, False]]))
-    torch.testing.assert_close(padded[:, :2], expected)
-    assert padded[0, 2].isneginf()
+def test_head_candidate_padding_permutation_and_signal_gradient():
+    torch.manual_seed(7)
+    head=MLPFusionHead(width=16,dropout=0).eval()
+    signal=torch.randn(2,1,512,requires_grad=True)
+    question,criteria=torch.randn(2,768),torch.randn(2,3,768)
+    mask=torch.ones(2,1,dtype=torch.bool)
+    choices=torch.tensor([[True,True,False],[True,True,True]])
+    expected=head(signal,mask,question,criteria,choices)
+    order=[2,0,1]
+    torch.testing.assert_close(head(signal,mask,question,criteria[:,order],choices[:,order]),expected[:,order])
+    expected[choices].sum().backward()
+    assert signal.grad.abs().sum()>0 and expected[0,2].isneginf()
 
 
 @pytest.mark.parametrize("shape", [(1, 2), (1, 1250), (4, 201), (128, 12800)])

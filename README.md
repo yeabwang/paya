@@ -1,64 +1,45 @@
 # Paya
 
-**A non-autoregressive system 1 decision model for physiological signals.** 
+A non-autoregressive System 1 decision model for physiological signals.
+
+The selected model combines frozen signal/text encoders with a trained MLP fusion head. It scores supplied candidates directly and returns the selected choice, confidence and candidate probabilities.
 
 ## Use
+
+Use Python 3.12 for the verified model runtime, then install Paya:
+
+```bash
+python -m pip install -r requirements-model.txt
+python -m pip install -e ".[test]"
+```
+
+Download the private [model bundle](https://huggingface.co/yeabwang/Paya) to `models/export/` using your Hugging Face account, then:
 
 ```python
 from paya.inference import load_model
 
-model = load_model("artifacts/paya-v1")
-state = {"signals": [{
-    "samples": ppg_samples,
-    "metadata": {
-        "sensor_type": "ppg",
-        "sampling_rate_hz": 125,
-        "duration_s": 10,
-        "signal_condition": "processed",
-    },
-}]}
-result = model.predict(
-    state=state,
-    question="Which pulse-rate category describes this recording?",
-    criteria=["Slow", "Normal", "Fast"],
-)
+model = load_model("models/export")
+state = {"signals": [{"samples": ppg_samples, "metadata": {
+    "sensor_type": "ppg", "sampling_rate_hz": 125,
+    "duration_s": 10, "signal_condition": "processed",
+}}]}
+result = model.predict(state, "What is the heart rate category?",
+                       ["bradycardia", "normal", "tachycardia"])
 ```
 
-Illustrative output:
+## Documentation
 
-```json
-{"choice": "Normal", "confidence": 0.8, "probabilities": {"Slow": 0.1, "Normal": 0.8, "Fast": 0.1}}
+- [Architecture](architecture.md)
+- [Experiments](experiments.md)
+- [Fine-tuning](finetune.md)
+- [Results and figures](results.md)
+- [Model card](models/model.card.md)
+
+Supported code is in `paya/`, tests in `tests/`, and the selected configuration in `config/paya.yaml`. Historical implementations and experiment tools are in ignored `retired/`. Checkpoints, local credentials, datasets and caches are not tracked.
+
+```bash
+python -m pytest -q -m "not integration"
+python -m pytest -q -m integration
 ```
 
-Each channel requires `sensor_type`, `sampling_rate_hz` and `duration_s`. Rates and durations must be finite positive numbers, with `duration_s = sample_count / sampling_rate_hz`. Supported types are **EEG, iEEG, ECG and PPG**, case-insensitive. Unit and lead fields are not used. All channels in a recording must have the same sampling rate, sample count and start time.
-
-`signal_condition` accepts `raw` (default) or `processed`. Raw channels receive native-rate NeuroKit cleaning. Processed channels bypass NeuroKit. Neither path resamples the signal. SPOTR then applies its pretrained per-channel z-score normalization internally.
-
-## Architecture
-
-`signal + metadata → validate → clean raw channels only → stack channels → frozen SPOTR once → shared decision head`
-
-Frozen BioLORD-2023 encodes the question and each choice separately for the head. Only the decision head is trainable. The original attention head uses text self-attention, signal cross-attention, feed-forward layers and a shared candidate scorer. The current experimental configuration uses an MLP fusion head with element-wise (Hadamard) product features; both use the same frozen encoders and public inputs.
-
-The entire recording enters the signal encoder once as `[1,C,L]`, in supplied channel order, and returns one global `[1,512]` embedding. Ten seconds of PPG at 125 Hz enters as `[1,1,1250]`; six seconds at 65 Hz enters as `[1,1,390]`. There is no grouping, splitting or overlap. The head receives the signal embedding and separate question/choice embeddings, without metadata or elapsed-time features.
-
-Vendor identity, checkpoint loading, capacity limits and token extraction live in [paya/vendor/spotr.py](paya/vendor/spotr.py). Shared code uses `SignalEncoder`; configuration and exported models identify its assets explicitly as `spotr: third-party/spotr`. Probabilities are keyed by the exact choice strings; confidence equals the chosen choice's probability.
-
-Inputs must contain **1–128 channels and 2–12,800 samples per channel**. Longer recordings and mismatched channel rates are rejected. Raw filters can require more samples. Acceptance does not establish physiological sufficiency. SPOTR removes absolute amplitude and level, and its published downstream preparation uses 200 Hz; native-rate accuracy requires task-specific evaluation. See [architecture and dimensions](docs/architecture-fix.md), [signal preparation](docs/preprocessing.md) and [training and W&B](docs/training.md).
-
-## Install and verify
-
-Use Python 3.11 or newer:
-
-```powershell
-python -m pip install -e ".[test]"
-python -m paya.assets --spotr third-party/spotr
-python -m pytest -q -m "not integration" --basetemp cache/pytest-unit
-python -m pytest -q -m integration --basetemp cache/pytest-integration
-```
-
-The signal and text encoders need local assets and `source.json` checksum records at the paths in [config/paya.yaml](config/paya.yaml). The asset command verifies the pinned upstream checkpoint before converting it to safetensors. The integration test exercises real frozen weights and writes `artifacts/architecture-shapes.json`.
-
-Paya versions are defined in [paya/provenance.py](paya/provenance.py): `v1`, Python package `1.0.0`. Accuracy, calibration, generalization and latency require trained weights and independent evaluation.
-
-Experiment runners, audits, analysis and postprocessing live in [scripts/](scripts/README.md). Reusable model and input code lives in `paya/`; local shell helpers stay in ignored `.temp/`.
+Reported results cover PPG; acceptance of other supported signal types does not establish their predictive accuracy.

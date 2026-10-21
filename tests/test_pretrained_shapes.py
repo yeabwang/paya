@@ -15,7 +15,7 @@ def test_real_signal_and_text_encoder_shapes_and_gradients(monkeypatch):
     assets = {"spotr": "third-party/spotr", "text": "third-party/biolord"}
     if not all((Path(path)/"source.json").exists() for path in assets.values()):
         pytest.skip("Pinned encoder assets have not been prepared")
-    model = PayaModel.from_assets(assets, head={"width": 256, "layers": 2, "heads": 4, "dropout": 0})
+    model = PayaModel.from_assets(assets, head={"kind":"interaction", "width":128, "dropout":0})
     examples = {}
     shapes = []
     hook = model.encoder.core.register_forward_hook(lambda m, x, y: shapes.append((list(x[0].shape), list(y.shape))))
@@ -56,7 +56,7 @@ def test_real_signal_and_text_encoder_shapes_and_gradients(monkeypatch):
     torch.nn.functional.cross_entropy(model(batch)["logits"], torch.tensor([1])).backward()
     assert all(p.grad is None and not p.requires_grad for p in model.encoder.parameters())
     assert all(p.grad is None and not p.requires_grad for p in model.text_encoder.model.parameters())
-    assert model.head.scorer.weight.grad.isfinite().all()
+    assert model.head.score[-1].weight.grad.isfinite().all()
     model.zero_grad(set_to_none=True)
     with pytest.raises(ValueError, match="context"):
         model.text_encoder.encode(["question "*200])
@@ -81,7 +81,7 @@ def test_real_signal_and_text_encoder_shapes_and_gradients(monkeypatch):
               "preparation": model.preprocessor.identity(), "examples": examples,
               "question": list(batch.question.shape), "criteria": list(batch.criteria.shape),
               "text_sequence_length": batch.criteria.shape[1]+1,
-              "role_embeddings": list(model.head.roles.shape), "decision_logits": list(result["logits"].shape),
+              "head_width": model.head.config["width"], "decision_logits": list(result["logits"].shape),
               "mixed_batch_logits": [2, 4],
               "joint_channel_global": list(encoded_joint.shape),
               "encoder_calls_per_recording": 1,

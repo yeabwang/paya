@@ -55,7 +55,7 @@ class EncoderDouble(nn.Module):
 def new_model():
     torch.manual_seed(100)
     return PayaModel(EncoderDouble(512), TextDouble(),
-                     head={"width": 256, "heads": 4, "layers": 2, "dropout": 0}).eval()
+                     head={"kind":"interaction", "width":128, "dropout":0}).eval()
 
 
 @pytest.fixture

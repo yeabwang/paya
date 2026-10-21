@@ -1,0 +1,10 @@
+torch==2.8.0
+numpy==2.3.2
+scipy==1.18.1
+neurokit2==0.2.12
+transformers==4.57.6
+sentence-transformers==5.7.0
+huggingface-hub==0.36.0
+safetensors==0.8.0
+pyarrow==23.0.1
+wandb==0.31.0

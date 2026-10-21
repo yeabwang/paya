@@ -162,7 +162,7 @@ def test_outcome_temperature_is_bound_to_decision_head(model, tmp_path):
     with pytest.raises(ValueError, match="overlaps"):
         fit_temperature(model, calibration, {"recording_id": ["heldout"]})
     with torch.no_grad():
-        model.head.scorer.weight.add_(0.01)
+        model.head.score[-1].weight.add_(0.01)
     with pytest.raises(ValueError, match="Calibration"):
         save_checkpoint(tmp_path/"stale.pt", model)
     model.train()
@@ -196,7 +196,7 @@ def test_training_entrypoint_and_resume_with_frozen_encoder(tmp_path, monkeypatc
     import paya.train as module
     model = new_model()
     frozen = {name: value.clone() for name, value in model.encoder.state_dict().items()}
-    original_head = model.head.scorer.weight.detach().clone()
+    original_head = model.head.score[-1].weight.detach().clone()
     monkeypatch.setattr(module.PayaModel, "from_assets", lambda *args, **kwargs: model)
     paths = {}
     for split in ("train", "selection", "calibration", "test"):
@@ -212,7 +212,7 @@ def test_training_entrypoint_and_resume_with_frozen_encoder(tmp_path, monkeypatc
     assert [row["phase"] for row in history] == ["decision_head", "decision_head"]
     best = torch.load(tmp_path/"run"/"best.pt", weights_only=True)
     assert best["training"]["epoch"] in (1, 2)
-    assert not torch.equal(model.head.scorer.weight, original_head)
+    assert not torch.equal(model.head.score[-1].weight, original_head)
     for name, value in model.encoder.state_dict().items():
         torch.testing.assert_close(value, frozen[name], rtol=0, atol=0)
     _, resumed = module.train(config_path, tmp_path/"run", resume=tmp_path/"run"/"last.pt")

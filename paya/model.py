@@ -7,7 +7,7 @@ import torch
 from torch import nn
 
 from .encoders import SignalEncoder
-from .head import DecisionHead, InteractionHead
+from .head import MLPFusionHead
 from .inputs import validate_text
 from .preprocessing import SignalPreprocessor, PreparationConfig, PreparedState
 from .provenance import RUNTIME_CONTRACT, ARCHITECTURE, verify_assets
@@ -36,10 +36,10 @@ class PayaModel(nn.Module):
         super().__init__()
         self.encoder = signal_encoder.requires_grad_(False).eval()
         settings = dict(head or {})
-        kind = settings.pop("kind", "attention")
-        if kind not in ("attention", "interaction"):
+        kind = settings.pop("kind", "interaction")
+        if kind != "interaction":
             raise ValueError("Unknown decision-head kind")
-        self.head = (InteractionHead if kind == "interaction" else DecisionHead)(**settings)
+        self.head = MLPFusionHead(**settings)
         self.text_encoder = text_encoder
         self.preprocessor = SignalPreprocessor(preparation)
         self.asset_identity = asset_identity or {"injected_test_encoders": True}
