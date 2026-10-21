@@ -57,6 +57,8 @@ class ChoiceDataset:
 
     def __init__(self, path):
         self.path = Path(path).resolve()
+        self.row_indices = None
+        self.manifest_snapshot = None
         if self.path.is_dir():
             self.files = sorted(self.path.rglob("*.parquet"))
             index = self.path / ".paya-index.sqlite3"
@@ -64,6 +66,21 @@ class ChoiceDataset:
             manifest = json.loads(self.path.read_text(encoding="utf-8"))
             base = Path(manifest.get("path_base", self.path.parent))
             self.files = [(base / p).resolve() for p in manifest["files"]]
+            info = self.path.stat()
+            self.manifest_snapshot = (info.st_size, info.st_mtime_ns)
+            if "row_indices" in manifest:
+                self.row_indices = {}
+                for name, groups in manifest['row_indices'].items():
+                    source = str((base/name).resolve())
+                    if Path(source) not in self.files or not isinstance(groups,dict):
+                        raise ValueError('Row selection must refer to a declared source file')
+                    self.row_indices[source] = {}
+                    for group, values in groups.items():
+                        if str(int(group)) != group or int(group)<0 or not isinstance(values,list):
+                            raise ValueError('Invalid row-group selection')
+                        if any(isinstance(v,bool) or not isinstance(v,int) or v<0 for v in values) or len(set(values))!=len(values):
+                            raise ValueError('Row positions must be distinct nonnegative integers')
+                        self.row_indices[source][int(group)] = values
             index = self.path.with_suffix(".paya-index.sqlite3")
         else:
             self.files = [self.path]
@@ -72,12 +89,17 @@ class ChoiceDataset:
             raise ValueError("Dataset must name nonempty, distinct input files")
         if any(p.suffix not in (".jsonl", ".parquet") for p in self.files):
             raise ValueError("Dataset files must be JSONL or Parquet")
+        if self.row_indices is not None and any(p.suffix != '.parquet' for p in self.files):
+            raise ValueError('Row selections require bounded Parquet sources')
         self.snapshots = [(str(p), p.stat().st_size, p.stat().st_mtime_ns) for p in self.files]
         self.file_stats = {name: (size, modified) for name, size, modified in self.snapshots}
         identities = [(str(p), sha256(p)) for p in self.files]
         self.sha256 = identities[0][1] if len(identities) == 1 else fingerprint(identities)
+        if self.row_indices is not None:
+            self.sha256 = fingerprint({'files':identities,'row_indices':self.row_indices})
         index = index.with_name(index.stem + "." + self.sha256[:16] + index.suffix)
-        binding = json.dumps({"version": INDEX_VERSION, "files": identities}, sort_keys=True)
+        binding = json.dumps({"version": INDEX_VERSION, "files": identities,
+                              **({'row_indices':self.row_indices} if self.row_indices is not None else {})}, sort_keys=True)
         valid = False
         if index.exists():
             try:
@@ -98,6 +120,10 @@ class ChoiceDataset:
         self.rows = _Rows(self)
 
     def assert_unchanged(self):
+        if self.manifest_snapshot is not None:
+            info = self.path.stat()
+            if (info.st_size,info.st_mtime_ns) != self.manifest_snapshot:
+                raise ValueError('Dataset manifest changed during training')
         current = [(str(p), p.stat().st_size, p.stat().st_mtime_ns) for p in self.files]
         if current != self.snapshots:
             raise ValueError("Dataset changed during training")
@@ -132,14 +158,24 @@ class ChoiceDataset:
                         if "state" not in pf.schema_arrow.names:
                             raise ValueError("Parquet dataset requires state")
                         columns = ["question","criteria","target",*AUDIT_FIELDS]
+                        selected = self.row_indices.get(str(path),{}) if self.row_indices is not None else None
+                        if selected is not None and any(g>=pf.metadata.num_row_groups for g in selected):
+                            raise ValueError('Selected row group does not exist')
                         for group in range(pf.metadata.num_row_groups):
+                            if selected is not None and not selected.get(group):
+                                continue
                             info = pf.metadata.row_group(group)
                             widths = {"BOOLEAN": 1, "INT32": 4, "INT64": 8, "INT96": 12, "FLOAT": 4, "DOUBLE": 8}
                             numeric_bytes = sum(info.column(i).num_values * widths.get(info.column(i).physical_type,0)
                                                 for i in range(info.num_columns))
                             if info.num_rows > MAX_BLOCK_ROWS or max(info.total_byte_size,numeric_bytes) > MAX_BLOCK_BYTES:
                                 raise ValueError("Parquet row group exceeds memory budget; repack with 256 rows per group")
-                            rows = pf.read_row_group(group,columns=columns).to_pylist()
+                            table = pf.read_row_group(group,columns=columns)
+                            if selected is not None:
+                                if max(selected[group]) >= len(table):
+                                    raise ValueError('Selected row position is out of bounds')
+                                table = table.take(selected[group])
+                            rows = table.to_pylist()
                             for row in rows:
                                 row["state"] = {}
                             if rows:
@@ -186,7 +222,10 @@ class ChoiceDataset:
             raise ValueError("Dataset changed during training")
         if block["kind"] == "parquet":
             import pyarrow.parquet as pq
-            rows = pq.ParquetFile(block["filename"]).read_row_group(block["position"]).to_pylist()
+            table = pq.ParquetFile(block["filename"]).read_row_group(block["position"])
+            if self.row_indices is not None:
+                table = table.take(self.row_indices[block['filename']][block['position']])
+            rows = table.to_pylist()
         else:
             with open(block["filename"],"rb") as source:
                 source.seek(block["position"])
