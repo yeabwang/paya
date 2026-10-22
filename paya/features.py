@@ -1,119 +1,145 @@
-"""Cache frozen FP32 features by signal, preprocessing and encoder identity."""
+"""Checksummed FP32 signal-token caches using the public batch-one encoding path."""
 
-from pathlib import Path
 import hashlib
 import json
+from pathlib import Path
 import sqlite3
 
 import torch
 
-from .provenance import CACHE_CONTRACT, fingerprint
 from .atomic import atomic_output
+from .provenance import fingerprint
 
 
-def tensor_digest(values):
-    import hashlib
-    digest = hashlib.sha256()
-    digest.update(values.contiguous().numpy().tobytes())
-    return digest.hexdigest()
+def tensor_digest(values, mask):
+    content = values.detach().cpu().contiguous().numpy().tobytes()
+    validity = mask.detach().cpu().contiguous().numpy().tobytes()
+    return hashlib.sha256(content + validity).hexdigest()
+
+
+def validate_tokens(values, mask):
+    if (
+        values.ndim != 2
+        or values.shape[1] != 512
+        or not len(values)
+        or values.dtype != torch.float32
+        or mask.dtype != torch.bool
+        or mask.shape != values.shape[:1]
+        or not mask.any()
+        or not mask[0]
+        or not torch.isfinite(values).all()
+    ):
+        raise ValueError("Signal token cache shape, precision or mask mismatch")
 
 
 class FeatureCache:
+    """Keep each recording's tokens and validity mask in one atomic file."""
+
     def __init__(self, directory):
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
 
+    def close(self):
+        pass
+
     def get_or_encode(self, model, prepared):
-        binding = {"contract": CACHE_CONTRACT, "model": model.identity(),
-                   "prepared": prepared.identity}
+        binding = {"model": model.feature_identity(), "prepared": prepared.identity}
         path = self.directory / (fingerprint(binding) + ".pt")
         if path.exists():
             payload = torch.load(path, map_location="cpu", weights_only=True)
             if payload.get("binding") != binding:
-                raise ValueError("Frozen feature cache contract mismatch")
-            values = payload["values"]
-            if values.shape != (1, 512):
-                raise ValueError("Frozen feature cache shape mismatch")
-            if values.dtype != torch.float32:
-                raise ValueError("Frozen feature cache must preserve FP32 computation")
-            if not torch.isfinite(values).all():
-                raise ValueError("Nonfinite cached features")
-            if tensor_digest(values) != payload.get("digest"):
-                raise ValueError("Cached feature content changed")
-            return values.to(model.device)
-        encoded = model.encode(prepared)
-        values = encoded.cpu().float()
+                raise ValueError("Signal token cache contract mismatch")
+            values, mask = payload["values"], payload["mask"]
+            validate_tokens(values, mask)
+            if tensor_digest(values, mask) != payload.get("digest"):
+                raise ValueError("Signal token cache content changed")
+            return values.to(model.device), mask.to(model.device)
+        values, mask = model.encode(prepared)
+        validate_tokens(values, mask)
         with atomic_output(path) as output:
-            torch.save({"binding": binding, "values": values,
-                        "digest": tensor_digest(values)}, output)
-        return encoded
+            torch.save(
+                {
+                    "binding": binding,
+                    "values": values.cpu(),
+                    "mask": mask.cpu(),
+                    "digest": tensor_digest(values, mask),
+                },
+                output,
+            )
+        return values, mask
 
 
 class SQLiteFeatureCache:
-    """Batch native encodes and keep verified FP32 features in one durable store."""
+    """Store variable-length tokens and masks, independently of head settings."""
 
     def __init__(self, path):
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path)
-        self.db.executescript('''PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
-            PRAGMA cache_size=-16384; PRAGMA temp_store=FILE;
-            CREATE TABLE IF NOT EXISTS metadata(binding TEXT PRIMARY KEY);
-            CREATE TABLE IF NOT EXISTS features(id TEXT PRIMARY KEY, values_blob BLOB, digest TEXT);''')
+        self.db.executescript("""
+            PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA cache_size=-16384;
+            CREATE TABLE IF NOT EXISTS bindings(id TEXT PRIMARY KEY, identity TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS tokens(binding TEXT, waveform TEXT, count INTEGER,
+                values_blob BLOB, mask_blob BLOB, digest TEXT, PRIMARY KEY(binding,waveform));
+        """)
 
-    @torch.no_grad()
-    def get_many_or_encode(self, model, prepared):
-        identity = dict(model.identity())
-        identity.pop('head', None)
-        current = {"contract":CACHE_CONTRACT,"model":identity}
-        binding = json.dumps(current,sort_keys=True)
-        existing = self.db.execute('SELECT binding FROM metadata').fetchone()
-        if existing:
-            previous = json.loads(existing[0])
-            # Old stores bound head settings even though frozen features do not depend on them.
-            if isinstance(previous.get('model'),dict):
-                previous['model'].pop('head',None)
-            if previous != current:
-                raise ValueError("Frozen feature cache contract mismatch")
-        if not existing:
-            with self.db: self.db.execute('INSERT INTO metadata VALUES (?)',(binding,))
-        unique = {value.identity:value for value in prepared}
-        found = {}
-        keys = list(unique)
-        for start in range(0,len(keys),500):
-            chunk=keys[start:start+500]
-            for key,content,digest in self.db.execute(
-                    'SELECT id,values_blob,digest FROM features WHERE id IN ('+','.join('?' for _ in chunk)+')',chunk):
-                if len(content)!=512*4 or hashlib.sha256(content).hexdigest()!=digest:
-                    raise ValueError("Cached feature content changed")
-                values=torch.frombuffer(bytearray(content),dtype=torch.float32).clone()
-                if not torch.isfinite(values).all():
-                    raise ValueError("Nonfinite cached features")
-                found[key]=values
-        shapes = {}
-        for key,value in unique.items():
-            if key not in found:
-                shape=tuple(model.preprocessor.format(value).samples.shape)
-                shapes.setdefault(shape,[]).append((key,value))
-        for entries in shapes.values():
-            encoded=model.encode_batch([value for _,value in entries]).cpu().float()
-            updates=[]
-            for (key,_),values in zip(entries,encoded):
-                content=values.contiguous().numpy().tobytes()
-                updates.append((key,content,hashlib.sha256(content).hexdigest()))
-                found[key]=values
-            with self.db:
-                self.db.executemany('INSERT INTO features VALUES (?,?,?)',updates)
-        return torch.stack([found[value.identity] for value in prepared]).to(model.device)
+    def close(self):
+        self.db.close()
 
     def get_or_encode(self, model, prepared):
-        return self.get_many_or_encode(model,[prepared])
+        identity = model.feature_identity()
+        binding = fingerprint(identity)
+        with self.db:
+            self.db.execute(
+                "INSERT OR IGNORE INTO bindings VALUES (?,?)",
+                (binding, json.dumps(identity, sort_keys=True)),
+            )
+        row = self.db.execute(
+            "SELECT count,values_blob,mask_blob,digest FROM tokens WHERE binding=? AND waveform=?",
+            (binding, prepared.identity),
+        ).fetchone()
+        if row is not None:
+            count, content, mask_bytes, digest = row
+            if (
+                count < 1
+                or len(content) != count * 512 * 4
+                or len(mask_bytes) != count
+                or hashlib.sha256(content + mask_bytes).hexdigest() != digest
+            ):
+                raise ValueError("Signal token cache content or shape changed")
+            values = (
+                torch.frombuffer(bytearray(content), dtype=torch.float32)
+                .clone()
+                .reshape(count, 512)
+            )
+            mask = torch.frombuffer(bytearray(mask_bytes), dtype=torch.bool).clone()
+            validate_tokens(values, mask)
+            return values.to(model.device), mask.to(model.device)
+        values, mask = model.encode(prepared)
+        validate_tokens(values, mask)
+        content = values.detach().cpu().contiguous().numpy().tobytes()
+        mask_bytes = mask.detach().cpu().contiguous().numpy().tobytes()
+        with self.db:
+            self.db.execute(
+                "INSERT INTO tokens VALUES (?,?,?,?,?,?)",
+                (
+                    binding,
+                    prepared.identity,
+                    len(values),
+                    content,
+                    mask_bytes,
+                    hashlib.sha256(content + mask_bytes).hexdigest(),
+                ),
+            )
+        return values, mask
 
 
 def open_feature_cache(config):
     if not config.get("feature_cache"):
         return None
-    kind=config.get("feature_cache_format","files")
-    if kind=="sqlite": return SQLiteFeatureCache(config["feature_cache"])
-    if kind=="files": return FeatureCache(config["feature_cache"])
+    kind = config.get("feature_cache_format", "sqlite")
+    if kind == "sqlite":
+        return SQLiteFeatureCache(config["feature_cache"])
+    if kind == "files":
+        return FeatureCache(config["feature_cache"])
     raise ValueError("feature_cache_format must be files or sqlite")
