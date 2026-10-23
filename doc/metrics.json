@@ -1,6 +1,0 @@
-{
-  "architecture": "self_then_cross_attention",
-  "status": "awaiting_clean_training",
-  "checkpoint_sha256": null,
-  "metrics": null
-}

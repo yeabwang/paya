@@ -21,12 +21,13 @@ question + candidates -> frozen BioLORD -> shared projection + roles         |
 
 Each `state.signals` entry contains finite one-dimensional `samples` and a `metadata` object:
 
-| Field | Meaning |
-| --- | --- |
-| `sensor_type` | `ppg`, `ecg`, `eeg` or `ieeg`; determines processing for raw input |
-| `sampling_rate_hz` | Positive native rate; used for validation and raw processing |
-| `duration_s` | Consistent with sample count divided by rate |
-| `signal_condition` | `raw` or `processed`; defaults to `raw` |
+
+| Field              | Meaning                                                            |
+| -------------------- | -------------------------------------------------------------------- |
+| `sensor_type`      | `ppg`, `ecg`, `eeg` or `ieeg`; determines processing for raw input |
+| `sampling_rate_hz` | Positive native rate; used for validation and raw processing       |
+| `duration_s`       | Consistent with sample count divided by rate                       |
+| `signal_condition` | `raw` or `processed`; defaults to `raw`                            |
 
 One recording has 1–128 channels and 2–12,800 samples per channel. All channels must share sample count, rate and start time. Supplied timestamps must describe uniform sampling. Channel order is preserved. Over-budget, nonfinite and misaligned inputs are rejected without silent truncation.
 

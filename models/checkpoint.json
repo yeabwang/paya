@@ -1,7 +1,0 @@
-{
-  "architecture": "self_then_cross_attention",
-  "head_parameters": 480257,
-  "status": "awaiting_clean_training",
-  "checkpoint_sha256": null,
-  "calibrated": false
-}
