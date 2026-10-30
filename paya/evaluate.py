@@ -30,9 +30,15 @@ class PredictionRecords:
 def collect(model, dataset, batch_size=8, cache=None, output_path=None):
     model.eval()
     if output_path is None:
-        directory=tempfile.TemporaryDirectory(prefix='paya-predictions-')
-        records=collect(model,dataset,batch_size,cache,output_path=Path(directory.name)/'predictions.jsonl')
-        records._temporary=directory
+        directory = tempfile.TemporaryDirectory(prefix="paya-predictions-")
+        records = collect(
+            model,
+            dataset,
+            batch_size,
+            cache,
+            output_path=Path(directory.name) / "predictions.jsonl",
+        )
+        records._temporary = directory
         return records
     if output_path is not None:
         count = 0
@@ -40,10 +46,26 @@ def collect(model, dataset, batch_size=8, cache=None, output_path=None):
             for rows in dataset.batches(batch_size):
                 result = model(make_batch(model, rows), cache=cache)
                 for row, logits in zip(rows, result["logits"]):
-                    output.write(json.dumps({"logits": logits[:len(row["criteria"])].cpu().tolist(),
-                        "target": row["target"], "criteria": row["criteria"],
-                        **{k: row[k] for k in ("source_id", "group_id", "recording_id")},
-                        **{k: row[k] for k in ("mapping_id", "datasetname") if k in row}}, allow_nan=False)+"\n")
+                    output.write(
+                        json.dumps(
+                            {
+                                "logits": logits[: len(row["criteria"])].cpu().tolist(),
+                                "target": row["target"],
+                                "criteria": row["criteria"],
+                                **{
+                                    k: row[k]
+                                    for k in ("source_id", "group_id", "recording_id")
+                                },
+                                **{
+                                    k: row[k]
+                                    for k in ("task", "mapping_id", "datasetname")
+                                    if k in row
+                                },
+                            },
+                            allow_nan=False,
+                        )
+                        + "\n"
+                    )
                     count += 1
         return PredictionRecords(output_path, count)
 
@@ -57,56 +79,93 @@ def metrics(records, temperature=1.0):
     bin_correct = np.zeros(15)
     bin_confidence = np.zeros(15)
     for row in records:
-        z = np.asarray(row["logits"], dtype=np.float64)/temperature
+        z = np.asarray(row["logits"], dtype=np.float64) / temperature
         if not np.isfinite(z).all():
             raise ValueError("Nonfinite prediction logits")
         z -= z.max()
-        p = np.exp(z); p /= p.sum()
+        p = np.exp(z)
+        p /= p.sum()
         target = row["target"]
-        losses += float(np.log(np.exp(z).sum())-z[target])
-        briers += float(((p - np.eye(len(p))[target])**2).sum())
+        losses += float(np.log(np.exp(z).sum()) - z[target])
+        briers += float(((p - np.eye(len(p))[target]) ** 2).sum())
         winner = min(range(len(p)), key=lambda i: (-p[i], row["criteria"][i]))
         hit = float(winner == target)
         confidence = float(p[winner])
         correct += hit
         count += 1
-        index = min(int(confidence*15),14)
+        index = min(int(confidence * 15), 14)
         bin_count[index] += 1
         bin_correct[index] += hit
         bin_confidence[index] += confidence
     if not count:
         raise ValueError("Need predictions and a finite positive temperature")
-    reliability = [{"bin": i, "count": int(bin_count[i]),
-                    "accuracy": float(bin_correct[i]/bin_count[i]),
-                    "confidence": float(bin_confidence[i]/bin_count[i])}
-                   for i in range(15) if bin_count[i]]
-    return {"count": count, "accuracy": correct/count, "nll": losses/count,
-            "brier": briers/count, "ece_15": float(sum(r["count"]/count*abs(r["accuracy"]-r["confidence"])
-                                                                       for r in reliability)),
-            "reliability": reliability}
+    reliability = [
+        {
+            "bin": i,
+            "count": int(bin_count[i]),
+            "accuracy": float(bin_correct[i] / bin_count[i]),
+            "confidence": float(bin_confidence[i] / bin_count[i]),
+        }
+        for i in range(15)
+        if bin_count[i]
+    ]
+    return {
+        "count": count,
+        "accuracy": correct / count,
+        "nll": losses / count,
+        "brier": briers / count,
+        "ece_15": float(
+            sum(
+                r["count"] / count * abs(r["accuracy"] - r["confidence"])
+                for r in reliability
+            )
+        ),
+        "reliability": reliability,
+    }
 
 
 if __name__ == "__main__":
     from .checkpoint import load_checkpoint
     from .features import open_feature_cache
     from .model import PayaModel
+    from .reporting import task_report
+    from .provenance import sha256
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=Path("config/paya.yaml"))
     parser.add_argument("--checkpoint", type=Path, required=True)
-    parser.add_argument("--split", choices=("selection", "calibration", "test"), default="test")
+    parser.add_argument(
+        "--split", choices=("selection", "calibration", "test"), default="test"
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--device", default="cpu")
     args = parser.parse_args()
     config = yaml.safe_load(args.config.read_text(encoding="utf-8"))
-    model = PayaModel.from_assets(config["assets"], config.get("preparation"), config.get("head"), args.device)
+    model = PayaModel.from_assets(
+        config["assets"], config.get("preparation"), config.get("head"), args.device
+    )
     load_checkpoint(args.checkpoint, model)
     dataset = ChoiceDataset(config["data"][args.split])
     cache = open_feature_cache(config)
-    records = collect(model, dataset, config.get("batch_size", 8), cache,
-                      output_path=args.output.with_suffix(".predictions.jsonl"))
-    report = {"split": args.split, "calibrated": model.calibration is not None,
-              "metrics": metrics(records, float(model.temperature)), "predictions_path": str(records.path)}
+    records = collect(
+        model,
+        dataset,
+        config.get("batch_size", 8),
+        cache,
+        output_path=args.output.with_suffix(".predictions.jsonl"),
+    )
+    report = {
+        "split": args.split,
+        "calibrated": model.calibration is not None,
+        "temperature": float(model.temperature),
+        "checkpoint_sha256": sha256(args.checkpoint),
+        "dataset_sha256": dataset.sha256,
+        "metrics": metrics(records, float(model.temperature)),
+        **task_report(records, float(model.temperature)),
+        "predictions_path": str(records.path),
+        "predictions_sha256": sha256(records.path),
+    }
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    with atomic_output(args.output,"w") as output:
-        json.dump(report,output,indent=2)
+    with atomic_output(args.output, "w") as output:
+        json.dump(report, output, indent=2)
     print(json.dumps(report["metrics"], indent=2))

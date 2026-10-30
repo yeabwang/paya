@@ -1,0 +1,33 @@
+# Replace dataset paths and budget for the new population before starting.
+seed: 42
+threads: 8
+assets:
+  spotr: third-party/spotr
+  text: third-party/biolord
+preparation:
+  max_channels: 128
+  max_samples: 12800
+head:
+  kind: self_then_cross_attention
+  width: 128
+  dropout: 0.1
+  heads: 4
+data:
+  train: data/new-data/train.json
+  selection: data/new-data/selection.json
+  calibration: data/new-data/calibration.json
+  test: data/new-data/test.json
+feature_cache: cache/new-data-tokens.sqlite3
+feature_cache_format: sqlite
+batch_size: 512
+optim:
+  epochs: 3
+  max_steps: 9594
+  lr: 0.00003
+  weight_decay: 0.01
+  label_smoothing: 0.05
+  checkpoint_every_steps: 100
+  eval_every_steps: 200
+  patience: 5
+wandb:
+  mode: disabled

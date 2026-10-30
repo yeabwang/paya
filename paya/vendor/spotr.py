@@ -136,7 +136,8 @@ MAX_SAMPLES = 12800
 MIN_SAMPLES = 2
 WIDTH = 512
 IDENTITY = {"model_id": MODEL_ID, "revision": REVISION, "implementation_revision": CODE_REVISION,
-            "config": CONFIG, "output": "global-token", "dimension": WIDTH,
+            "config": CONFIG, "output": "global-channel-temporal-tokens", "dimension": WIDTH,
+            "mask": "exclude-fully-padded-temporal-tokens",
             "normalization": "channel-zscore", "padding": "zero-to-multiple-of-200",
             "max_channels": MAX_CHANNELS, "min_samples": MIN_SAMPLES, "max_samples": MAX_SAMPLES}
 
@@ -157,7 +158,7 @@ def load_encoder(directory):
 
 
 def encode(core, samples):
-    """Encode one complete recording and select the official global token."""
+    """Encode one complete recording and mask fully padded temporal positions."""
     if (samples.ndim != 2 or not 1 <= samples.shape[0] <= MAX_CHANNELS
             or not MIN_SAMPLES <= samples.shape[1] <= MAX_SAMPLES or not torch.isfinite(samples).all()):
         raise ValueError("SPOTR expects finite [C,L] samples: 1-128 channels, 2-12800 samples")
@@ -166,20 +167,9 @@ def encode(core, samples):
     patches = 2*((length+199)//200)
     if tokens.shape != (1, 1+channels+patches, WIDTH) or not torch.isfinite(tokens).all():
         raise ValueError("Pinned SPOTR must return finite tokens [1,1+C+N,512]")
-    return tokens[:, 0]
-
-
-def encode_batch(core, samples):
-    """Encode equally shaped recordings independently in one device operation."""
-    if (samples.ndim != 3 or not len(samples) or not 1 <= samples.shape[1] <= MAX_CHANNELS
-            or not MIN_SAMPLES <= samples.shape[2] <= MAX_SAMPLES or not torch.isfinite(samples).all()):
-        raise ValueError("SPOTR expects finite [B,C,L] samples within native budgets")
-    batch, channels, length = samples.shape
-    tokens = core(samples)
-    patches = 2*((length+199)//200)
-    if tokens.shape != (batch, 1+channels+patches, WIDTH) or not torch.isfinite(tokens).all():
-        raise ValueError("Pinned SPOTR returned invalid batch tokens")
-    return tokens[:, 0]
+    mask = torch.ones(tokens.shape[:2], dtype=torch.bool, device=tokens.device)
+    mask[:, 1+channels:] = torch.arange(patches, device=tokens.device)*100 < length
+    return tokens.float().detach(), mask
 
 def download_encoder(directory, checkpoint=None):
     """Verify published tensor weights before converting them to safetensors."""

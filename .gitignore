@@ -25,3 +25,8 @@ checkpoints/
 /models/.cache/
 AGENTS.md
 /artifacts/
+/retired/
+/experiments/runs/
+/experiments/cache/
+/experiments/results/
+AGENTS.md
