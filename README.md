@@ -2,7 +2,7 @@
 
 **A non-autoregressive System 1 decision model for physiological signals.** Frozen SPOTR provides global, channel and temporal signal tokens. Frozen BioLORD encodes the question and candidates separately. A **480,257-parameter attention head** applies question/candidate self-attention, then cross-attention to the signal tokens, followed by a shared candidate scorer.
 
-![1792750160494](image/README/1792750160494.webp)
+![arc](image/README/arc.png)
 
 ## Setup and training
 
